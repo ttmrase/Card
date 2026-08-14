@@ -176,22 +176,29 @@ fun <T> Dropdown(
     }
 }
 
-/** 数値専用の入力欄。空欄のときは 0 として扱う。 */
+/** 数値専用の入力欄。入力途中の状態を壊さないよう、表示文字列を自前で保持する。 */
 @Composable
 fun NumberField(
     label: String,
     value: Int,
     modifier: Modifier = Modifier,
-    step: Int = 1,
     onValueChange: (Int) -> Unit
 ) {
-    var text by remember(value) { mutableStateOf(value.toString()) }
+    var text by remember { mutableStateOf(value.toString()) }
+    // 外側で値が変わったときだけ表示を追従させる。
+    LaunchedEffect(value) {
+        if (text.toIntOrNull() != value) text = value.toString()
+    }
     OutlinedTextField(
         value = text,
         onValueChange = { raw ->
-            val filtered = raw.filter { it.isDigit() || (it == '-' && raw.indexOf(it) == 0) }
+            val filtered = buildString {
+                raw.forEachIndexed { index, c ->
+                    if (c.isDigit() || (c == '-' && index == 0)) append(c)
+                }
+            }
             text = filtered
-            onValueChange(filtered.toIntOrNull() ?: 0)
+            filtered.toIntOrNull()?.let(onValueChange)
         },
         label = { Text(label) },
         singleLine = true,
@@ -200,7 +207,6 @@ fun NumberField(
         ),
         modifier = modifier
     )
-    // step は呼び出し側のレイアウト都合で受け取っているだけで、入力自体には使わない。
 }
 
 @Composable

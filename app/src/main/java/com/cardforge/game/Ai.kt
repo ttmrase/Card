@@ -38,7 +38,7 @@ class AiInteraction(
         if (candidates.isEmpty()) return emptyList()
 
         val ranked = candidates.sortedWith(
-            compareByDescending { card ->
+            compareByDescending<CardInstance> { card ->
                 val ownedByAi = state.ownerIndexOf(card) == aiIndex
                 val power = maxOf(card.atkValue, card.defValue)
                 // 相手のカードは強いものから、自分のカードは弱いものから選ぶ。
@@ -137,7 +137,7 @@ class AiController(
     private suspend fun playBattlePhase() {
         // 攻撃力の高い順に攻撃させる。盤面は攻撃ごとに変わるので毎回取り直す。
         var guard = 0
-        while (!state.finished && guard++ < DeckRules_ZONE_LIMIT) {
+        while (!state.finished && guard++ < MAX_ATTACK_ITERATIONS) {
             val attacker = me.monsters
                 .filter { engine.canAttack(it) }
                 .maxByOrNull { it.atkValue } ?: break
@@ -196,6 +196,6 @@ class AiController(
 
     private companion object {
         /** 攻撃の while ループが暴走しないための上限。 */
-        const val DeckRules_ZONE_LIMIT = 10
+        const val MAX_ATTACK_ITERATIONS = 10
     }
 }

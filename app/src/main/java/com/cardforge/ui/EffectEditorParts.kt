@@ -3,7 +3,6 @@ package com.cardforge.ui
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
-import androidx.compose.foundation.layout.FlowRowScope
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -221,10 +220,12 @@ fun CardScopeEditor(
 /** 折り返しながらチップを並べるための薄いラッパー。 */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun FlowRowSimple(content: @Composable FlowRowScope.() -> Unit) {
+fun FlowRowSimple(content: @Composable () -> Unit) {
+    // FlowRowScope を公開シグネチャに出さないので、呼び出し側は opt-in 不要。
     FlowRow(
         horizontalArrangement = Arrangement.spacedBy(6.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
-        content = content
-    )
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        content()
+    }
 }

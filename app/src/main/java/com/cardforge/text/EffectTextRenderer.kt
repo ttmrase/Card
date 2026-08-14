@@ -82,7 +82,7 @@ object EffectTextRenderer {
         val prefix = zonePrefix(scope.who, scope.zone)
         val noun = filtersToNoun(scope.filters, master, scope.zone)
         return when {
-            scope.selection == SelectionMode.ALL -> "$prefix全ての$noun"
+            scope.selection == SelectionMode.ALL -> "${prefix}全ての$noun"
             withCount -> "$prefix$noun${scope.count}${counter(scope)}"
             else -> "$prefix$noun"
         }
@@ -154,9 +154,9 @@ object EffectTextRenderer {
             val noun = scopeToText(condition.scope, master, withCount = false)
             val counterWord = counter(condition.scope)
             if (condition.negate) {
-                "$noun が存在しない".replace(" ", "")
+                "${noun}が存在しない"
             } else {
-                "$noun が${condition.atLeast}$counterWord以上存在する".replace(" ", "")
+                "${noun}が${condition.atLeast}${counterWord}以上存在する"
             }
         }
 
@@ -234,13 +234,13 @@ object EffectTextRenderer {
                     "【コスト】" + clause.costs.joinToString("、") { costToText(it, master) } + " "
                 )
             }
-            if (clause.oncePerTurn) sb.append("この効果は1ターンに1度しか使用できない。")
             if (card.kind == CardKind.MONSTER && clause.timing != EffectTiming.ON_ACTIVATE) {
                 sb.append(clause.timing.label + "、")
             }
 
             sb.append(clause.actions.joinToString("。その後、") { actionToText(it, master) })
             sb.append("。")
+            if (clause.oncePerTurn) sb.append("この効果は1ターンに1度しか使用できない。")
             lines += sb.toString()
         }
 

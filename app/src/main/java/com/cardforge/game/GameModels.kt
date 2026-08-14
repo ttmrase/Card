@@ -108,7 +108,7 @@ class GameState(
 
     fun opponentOf(player: PlayerState): PlayerState = players[1 - player.index]
 
-    fun log(message: String) {
+    fun addLog(message: String) {
         log.add(message)
         if (log.size > 300) log.removeAt(0)
     }
@@ -141,7 +141,7 @@ object GameSetup {
             drawInitial(p1)
         }
 
-        state.log("デュエル開始！ 先攻は ${state.turnPlayer.name}。")
+        state.addLog("デュエル開始！ 先攻は ${state.turnPlayer.name}。")
         return state
     }
 

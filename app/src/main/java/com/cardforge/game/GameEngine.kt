@@ -20,7 +20,7 @@ class GameEngine(
     private var triggerDepth = 0
     private var responseDepth = 0
 
-    private fun log(message: String) = state.log(message)
+    private fun log(message: String) = state.addLog(message)
 
     // =======================================================================
     // 位置の特定と移動
