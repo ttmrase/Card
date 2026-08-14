@@ -105,7 +105,13 @@ fun EffectEditorSection(
         }
 
         OutlinedButton(
-            onClick = { onChange(effect.copy(clauses = effect.clauses + EffectClause())) },
+            onClick = {
+                onChange(
+                    effect.copy(
+                        clauses = effect.clauses + EffectClause(timing = defaultTimingFor(kind))
+                    )
+                )
+            },
             modifier = Modifier.fillMaxWidth()
         ) {
             Icon(Icons.Default.Add, contentDescription = null)
@@ -184,6 +190,13 @@ fun EffectEditorSection(
 }
 
 private const val COMMON = -1
+
+/**
+ * 新しい効果の初期タイミング。モンスターは自分のメインフェイズに手動で発動する
+ * 起動効果を、魔法・罠は発動時を既定にする。
+ */
+fun defaultTimingFor(kind: CardKind): EffectTiming =
+    if (kind == CardKind.MONSTER) EffectTiming.IGNITION else EffectTiming.ON_ACTIVATE
 
 @Composable
 private fun ClauseEditor(
