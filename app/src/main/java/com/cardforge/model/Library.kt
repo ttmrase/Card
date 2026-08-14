@@ -1,0 +1,87 @@
+package com.cardforge.model
+
+import kotlinx.serialization.Serializable
+import java.util.UUID
+
+fun newId(): String = UUID.randomUUID().toString()
+
+/** プレイヤーが自由に作成・編集できるマスターデータの1項目（属性・種族・カテゴリ）。 */
+@Serializable
+data class NamedEntry(
+    val id: String,
+    val name: String
+)
+
+@Serializable
+data class MasterData(
+    val attributes: List<NamedEntry> = emptyList(),
+    val races: List<NamedEntry> = emptyList(),
+    val categories: List<NamedEntry> = emptyList()
+) {
+    fun attributeName(id: String?): String =
+        attributes.firstOrNull { it.id == id }?.name ?: "－"
+
+    fun raceName(id: String?): String =
+        races.firstOrNull { it.id == id }?.name ?: "－"
+
+    fun categoryName(id: String?): String =
+        categories.firstOrNull { it.id == id }?.name ?: "－"
+}
+
+@Serializable
+data class CardDef(
+    val id: String,
+    val name: String,
+    val kind: CardKind,
+    /** 端末から取り込んだイラストの内部ファイルパス。 */
+    val imagePath: String? = null,
+    val categoryIds: List<String> = emptyList(),
+    // 以下はモンスターカードのみ使用。
+    val level: Int = 4,
+    val attributeId: String? = null,
+    val raceId: String? = null,
+    val atk: Int = 0,
+    val def: Int = 0,
+    val flavor: String = "",
+    /** null または空 = 効果を持たないカード。 */
+    val effect: EffectText? = null
+) {
+    val hasEffect: Boolean get() = effect != null && !effect.isEmpty
+
+    /** 通常召喚に必要なリリース数。レベル4以下は0、5〜6は1、7以上は2。 */
+    val tributesRequired: Int
+        get() = when {
+            kind != CardKind.MONSTER -> 0
+            level <= 4 -> 0
+            level <= 6 -> 1
+            else -> 2
+        }
+}
+
+@Serializable
+data class Deck(
+    val id: String,
+    val name: String,
+    /** カードIDの並び。同じIDを複数入れると、その枚数だけデッキに入る。 */
+    val cardIds: List<String> = emptyList()
+) {
+    val size: Int get() = cardIds.size
+}
+
+@Serializable
+data class Library(
+    val master: MasterData = MasterData(),
+    val cards: List<CardDef> = emptyList(),
+    val decks: List<Deck> = emptyList()
+) {
+    fun card(id: String): CardDef? = cards.firstOrNull { it.id == id }
+}
+
+object DeckRules {
+    const val MIN_SIZE = 20
+    const val MAX_SIZE = 60
+    const val MAX_COPIES = 3
+    const val STARTING_HAND = 5
+    const val STARTING_LIFE = 8000
+    const val ZONE_COUNT = 5
+}
