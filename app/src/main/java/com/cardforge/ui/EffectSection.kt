@@ -33,6 +33,7 @@ fun EffectEditorSection(
     var conditionTarget by remember { mutableStateOf<Int?>(null) }
     var costTarget by remember { mutableStateOf<Int?>(null) }
     var actionTarget by remember { mutableStateOf<Pair<Int, Int?>?>(null) }
+    var limitTarget by remember { mutableStateOf<Int?>(null) }
 
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
 
@@ -74,6 +75,43 @@ fun EffectEditorSection(
                     )
                 }
             )
+
+            LimitList(
+                limits = effect.limits,
+                master = master,
+                label = "【制限】カード全体の発動回数",
+                cardWide = true,
+                onAdd = { limitTarget = COMMON },
+                onRemove = { index ->
+                    onChange(
+                        effect.copy(
+                            limits = effect.limits.toMutableList().also { it.removeAt(index) })
+                    )
+                }
+            )
+
+            if (kind != CardKind.MONSTER) {
+                HorizontalDivider()
+                Text(
+                    "【発動後】",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Dropdown(
+                    label = "",
+                    items = AfterActivation.all,
+                    selected = effect.afterActivation ?: AfterActivation.DEFAULT,
+                    itemLabel = { it.label }
+                ) { onChange(effect.copy(afterActivation = it)) }
+                Text(
+                    "発動して解決したあと、このカードをどうするか。" +
+                        "通常魔法のように使い切るなら「墓地へ送る」、" +
+                        "永続魔法のように残すなら「フィールドに残す」。" +
+                        "指定しない場合は「墓地へ送る」になります。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
 
         // ---- 各効果 -----------------------------------------------------
@@ -99,6 +137,7 @@ fun EffectEditorSection(
                 },
                 onAddCondition = { conditionTarget = clauseIndex },
                 onAddCost = { costTarget = clauseIndex },
+                onAddLimit = { limitTarget = clauseIndex },
                 onAddAction = { actionTarget = clauseIndex to null },
                 onEditAction = { actionIndex -> actionTarget = clauseIndex to actionIndex }
             )
@@ -165,6 +204,29 @@ fun EffectEditorSection(
         )
     }
 
+    limitTarget?.let { target ->
+        LimitDialog(
+            master = master,
+            onDismiss = { limitTarget = null },
+            onConfirm = { limit ->
+                onChange(
+                    if (target == COMMON) {
+                        effect.copy(limits = effect.limits + limit)
+                    } else {
+                        effect.copy(
+                            clauses = effect.clauses.toMutableList().also { list ->
+                                list[target] = list[target].copy(
+                                    limits = list[target].limits + limit
+                                )
+                            }
+                        )
+                    }
+                )
+                limitTarget = null
+            }
+        )
+    }
+
     actionTarget?.let { (clauseIndex, actionIndex) ->
         val clause = effect.clauses.getOrNull(clauseIndex)
         ActionDialog(
@@ -208,6 +270,7 @@ private fun ClauseEditor(
     onDelete: () -> Unit,
     onAddCondition: () -> Unit,
     onAddCost: () -> Unit,
+    onAddLimit: () -> Unit,
     onAddAction: () -> Unit,
     onEditAction: (Int) -> Unit
 ) {
@@ -230,14 +293,6 @@ private fun ClauseEditor(
                 selected = clause.timing,
                 itemLabel = { it.label }
             ) { onChange(clause.copy(timing = it)) }
-        }
-
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Checkbox(
-                checked = clause.oncePerTurn,
-                onCheckedChange = { onChange(clause.copy(oncePerTurn = it)) }
-            )
-            Text("1ターンに1度しか使用できない", style = MaterialTheme.typography.bodySmall)
         }
 
         LocationPicker(
@@ -271,6 +326,39 @@ private fun ClauseEditor(
                 )
             }
         )
+
+        LimitList(
+            limits = clause.limits,
+            master = master,
+            label = "この効果だけの【制限】",
+            cardWide = false,
+            onAdd = onAddLimit,
+            onRemove = { i ->
+                onChange(
+                    clause.copy(limits = clause.limits.toMutableList().also { it.removeAt(i) })
+                )
+            }
+        )
+
+        if (kind != CardKind.MONSTER) {
+            Text(
+                "この効果だけの【発動後】",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Dropdown(
+                label = "",
+                items = AfterActivation.all,
+                selected = clause.afterActivation,
+                itemLabel = { it.label },
+                placeholder = "カード共通の指定に従う"
+            ) { onChange(clause.copy(afterActivation = it)) }
+            if (clause.afterActivation != null) {
+                TextButton(onClick = { onChange(clause.copy(afterActivation = null)) }) {
+                    Text("指定を解除")
+                }
+            }
+        }
 
         HorizontalDivider()
         Text(
@@ -388,6 +476,30 @@ private fun CostList(
             RemovableLine(EffectTextRenderer.costToText(cost, master)) { onRemove(index) }
         }
         Chip("＋ コストを追加", onClick = onAdd)
+    }
+}
+
+@Composable
+private fun LimitList(
+    limits: List<UsageLimit>,
+    master: MasterData,
+    label: String,
+    cardWide: Boolean,
+    onAdd: () -> Unit,
+    onRemove: (Int) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        limits.forEachIndexed { index, limit ->
+            RemovableLine(EffectTextRenderer.limitToText(limit, master, cardWide)) {
+                onRemove(index)
+            }
+        }
+        Chip("＋ 制限を追加", onClick = onAdd)
     }
 }
 

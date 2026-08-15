@@ -198,6 +198,24 @@ data class BanishFromGraveCost(
 data class MillCost(val count: Int) : Cost
 
 // ---------------------------------------------------------------------------
+// 【制限】
+// ---------------------------------------------------------------------------
+
+/**
+ * 発動回数の制限。「1ターンに[times]度まで」を [scope] の単位で数える。
+ *
+ * 効果番号より前に書いた制限はカードの全ての効果をまとめて数え、
+ * 効果番号の直後に書いた制限はその番号の効果だけを数える。
+ */
+@Serializable
+data class UsageLimit(
+    val scope: LimitScope = LimitScope.THIS_CARD,
+    val times: Int = 1,
+    /** [LimitScope.CATEGORY] のとき数える対象のカテゴリ。null ならこのカードのカテゴリ。 */
+    val categoryId: String? = null
+)
+
+// ---------------------------------------------------------------------------
 // 効果テキスト本体。
 //
 // EffectText 直下の場所・条件・コストは効果番号より前に書かれたもので、
@@ -212,6 +230,11 @@ data class EffectClause(
     val conditions: List<Condition> = emptyList(),
     val costs: List<Cost> = emptyList(),
     val actions: List<Action> = emptyList(),
+    /** この効果だけの制限。 */
+    val limits: List<UsageLimit> = emptyList(),
+    /** この効果だけの【発動後】。null ならカード共通の指定に従う。 */
+    val afterActivation: AfterActivation? = null,
+    /** 旧データ互換。制限欄が空でこれが true なら「1ターンに1度」として扱う。 */
     val oncePerTurn: Boolean = false
 )
 
@@ -220,6 +243,10 @@ data class EffectText(
     val locations: List<ActivationLocation> = emptyList(),
     val conditions: List<Condition> = emptyList(),
     val costs: List<Cost> = emptyList(),
+    /** 全ての効果をまとめて数える制限。 */
+    val limits: List<UsageLimit> = emptyList(),
+    /** 【発動後】。null なら [AfterActivation.DEFAULT]（墓地へ送る）。 */
+    val afterActivation: AfterActivation? = null,
     val clauses: List<EffectClause> = emptyList()
 ) {
     val isEmpty: Boolean get() = clauses.all { it.actions.isEmpty() }
@@ -235,4 +262,18 @@ data class EffectText(
 
     fun costsFor(index: Int): List<Cost> =
         costs + clauses.getOrNull(index)?.costs.orEmpty()
+
+    /** [index] 番目の効果にだけ掛かる制限（旧データの oncePerTurn を含む）。 */
+    fun clauseLimitsFor(index: Int): List<UsageLimit> {
+        val clause = clauses.getOrNull(index) ?: return emptyList()
+        if (clause.limits.isNotEmpty()) return clause.limits
+        return if (clause.oncePerTurn) listOf(UsageLimit(LimitScope.THIS_CARD, 1))
+        else emptyList()
+    }
+
+    /** [index] 番目の効果の【発動後】。指定が無ければ既定の「墓地へ送る」。 */
+    fun afterActivationFor(index: Int): AfterActivation =
+        clauses.getOrNull(index)?.afterActivation
+            ?: afterActivation
+            ?: AfterActivation.DEFAULT
 }

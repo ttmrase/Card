@@ -59,7 +59,7 @@ object DefaultData {
                     clauses = listOf(
                         EffectClause(
                             timing = EffectTiming.ON_SUMMON,
-                            oncePerTurn = true,
+                            limits = listOf(UsageLimit(LimitScope.SAME_NAME, 1)),
                             actions = listOf(
                                 ToHandAction(
                                     CardScope(
@@ -94,7 +94,7 @@ object DefaultData {
                     clauses = listOf(
                         EffectClause(
                             timing = EffectTiming.IGNITION,
-                            oncePerTurn = true,
+                            limits = listOf(UsageLimit(LimitScope.THIS_CARD, 1)),
                             costs = listOf(DiscardCost(1)),
                             conditions = listOf(
                                 CardExistsCondition(
@@ -131,8 +131,8 @@ object DefaultData {
                 kind = CardKind.SPELL,
                 categoryIds = listOf(araragi),
                 effect = EffectText(
-                    locations = listOf(ActivationLocation.HAND, ActivationLocation.FIELD),
                     costs = listOf(PayLifeCost(500)),
+                    limits = listOf(UsageLimit(LimitScope.CATEGORY, 1, araragi)),
                     clauses = listOf(
                         EffectClause(
                             actions = listOf(
@@ -162,6 +162,7 @@ object DefaultData {
                 name = "知識の巻物",
                 kind = CardKind.SPELL,
                 effect = EffectText(
+                    afterActivation = AfterActivation.TO_GRAVE,
                     clauses = listOf(
                         EffectClause(
                             actions = listOf(DrawAction(PlayerRef.SELF, 2))
@@ -224,6 +225,22 @@ object DefaultData {
                                     )
                                 )
                             )
+                        )
+                    )
+                )
+            ),
+
+            // --- 発動後もフィールドに残る永続魔法 ---
+            CardDef(
+                id = newId(),
+                name = "終わらない祝祭",
+                kind = CardKind.SPELL,
+                effect = EffectText(
+                    afterActivation = AfterActivation.STAY_ON_FIELD,
+                    limits = listOf(UsageLimit(LimitScope.THIS_CARD, 1)),
+                    clauses = listOf(
+                        EffectClause(
+                            actions = listOf(RecoverAction(PlayerRef.SELF, 500))
                         )
                     )
                 )

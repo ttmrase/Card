@@ -30,6 +30,7 @@ import com.cardforge.model.MasterData
 import com.cardforge.model.Position
 import com.cardforge.text.EffectTextRenderer
 import com.cardforge.ui.theme.*
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
 @Composable
@@ -65,6 +66,7 @@ fun DuelScreen(
     var detail by remember { mutableStateOf<CardInstance?>(null) }
     var attacker by remember { mutableStateOf<CardInstance?>(null) }
     var showLog by remember { mutableStateOf(false) }
+    var zoneViewer by remember { mutableStateOf<Pair<String, List<CardInstance>>?>(null) }
     var showSurrender by remember { mutableStateOf(false) }
 
     ScreenScaffold(
@@ -86,7 +88,8 @@ fun DuelScreen(
             PlayerBanner(
                 player = top,
                 isTurnPlayer = state.turnPlayerIndex == top.index,
-                thinking = controller.aiThinking && top.index == controller.aiIndex
+                thinking = controller.aiThinking && top.index == controller.aiIndex,
+                onOpenZone = { title, cards -> zoneViewer = title to cards }
             )
             FaceDownHand(count = top.hand.size)
             ZoneRow(
@@ -143,7 +146,8 @@ fun DuelScreen(
             PlayerBanner(
                 player = bottom,
                 isTurnPlayer = state.turnPlayerIndex == bottom.index,
-                thinking = false
+                thinking = false,
+                onOpenZone = { title, cards -> zoneViewer = title to cards }
             )
 
             Text(
@@ -182,6 +186,7 @@ fun DuelScreen(
             player = bottom,
             controller = controller,
             master = master,
+            scope = scope,
             onDismiss = { selected = null },
             onShowDetail = {
                 selected = null
@@ -196,6 +201,21 @@ fun DuelScreen(
 
     detail?.let { card ->
         CardDetailDialog(inst = card, master = master, onDismiss = { detail = null })
+    }
+
+    zoneViewer?.let { (title, cards) ->
+        ZoneViewerDialog(
+            title = title,
+            cards = cards,
+            master = master,
+            onDismiss = { zoneViewer = null },
+            onSelect = { card ->
+                zoneViewer = null
+                // 【場所】に墓地を指定した効果は、ここから発動できる。
+                if (interactive && bottom.graveyard.any { it === card }) selected = card
+                else detail = card
+            }
+        )
     }
 
     // ---- エンジンからの問い合わせ ------------------------------------------
@@ -240,7 +260,12 @@ fun DuelScreen(
 // ===========================================================================
 
 @Composable
-private fun PlayerBanner(player: PlayerState, isTurnPlayer: Boolean, thinking: Boolean) {
+private fun PlayerBanner(
+    player: PlayerState,
+    isTurnPlayer: Boolean,
+    thinking: Boolean,
+    onOpenZone: (String, List<CardInstance>) -> Unit
+) {
     Surface(
         color = if (isTurnPlayer) Surface2 else Surface1,
         shape = RoundedCornerShape(8.dp),
@@ -262,10 +287,22 @@ private fun PlayerBanner(player: PlayerState, isTurnPlayer: Boolean, thinking: B
                 fontSize = 16.sp,
                 modifier = Modifier.weight(1f)
             )
+            Text("デッキ${player.deck.size}", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text(
-                "デッキ${player.deck.size} 墓地${player.graveyard.size} 除外${player.banished.size}",
+                "墓地${player.graveyard.size}",
                 fontSize = 11.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = Gold,
+                modifier = Modifier.clickable {
+                    onOpenZone("${player.name}の墓地", player.graveyard.toList())
+                }
+            )
+            Text(
+                "除外${player.banished.size}",
+                fontSize = 11.sp,
+                color = Gold,
+                modifier = Modifier.clickable {
+                    onOpenZone("${player.name}の除外ゾーン", player.banished.toList())
+                }
             )
             if (thinking) {
                 Text("思考中…", fontSize = 11.sp, color = Accent)
@@ -477,12 +514,16 @@ private fun CardActionDialog(
     player: PlayerState,
     controller: DuelController,
     master: MasterData,
+    /**
+     * 画面側のスコープを受け取る。ダイアログ内で rememberCoroutineScope() を使うと、
+     * 閉じた瞬間にスコープごと解約されて、発動処理が走る前に打ち切られてしまう。
+     */
+    scope: CoroutineScope,
     onDismiss: () -> Unit,
     onShowDetail: () -> Unit,
     onStartAttack: () -> Unit
 ) {
     val engine = controller.engine
-    val scope = rememberCoroutineScope()
     val inHand = player.hand.any { it === inst }
     val canActivate = engine.activatableCards(player).any { it === inst }
 
@@ -535,7 +576,7 @@ private fun CardActionDialog(
                     }
                 }
 
-                if (!inHand && inst.card.kind == CardKind.MONSTER) {
+                if (engine.isOnField(inst) && inst.card.kind == CardKind.MONSTER) {
                     ActionButton("攻撃する", enabled = engine.canAttack(inst)) {
                         onStartAttack()
                     }
@@ -732,5 +773,61 @@ private fun CardSelectionDialog(
                 }
             }
         }
+    )
+}
+
+/** 墓地や除外ゾーンの中身を一覧するダイアログ。 */
+@Composable
+private fun ZoneViewerDialog(
+    title: String,
+    cards: List<CardInstance>,
+    master: MasterData,
+    onDismiss: () -> Unit,
+    onSelect: (CardInstance) -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("$title (${cards.size})") },
+        text = {
+            if (cards.isEmpty()) {
+                Text("カードがありません。")
+            } else {
+                LazyColumn(
+                    Modifier.heightIn(max = 420.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    items(cards, key = { it.uid }) { card ->
+                        Surface(
+                            color = Surface2,
+                            shape = RoundedCornerShape(6.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onSelect(card) }
+                        ) {
+                            Row(
+                                Modifier.padding(8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                CardArt(
+                                    imagePath = card.card.imagePath,
+                                    kind = card.card.kind,
+                                    modifier = Modifier.size(width = 30.dp, height = 42.dp)
+                                )
+                                Column(Modifier.weight(1f)) {
+                                    Text(card.card.name, fontWeight = FontWeight.Bold)
+                                    Text(
+                                        EffectTextRenderer.summary(card.card, master),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("閉じる") } }
     )
 }

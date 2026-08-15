@@ -31,9 +31,10 @@ class DuelSimulationTest {
                     controllers[before].playTurn()
 
                     state.players.forEach { player ->
+                        // 回復効果でライフは初期値を超えうるが、負にはならない。
                         assertTrue(
-                            "life exceeded the starting total in game $game",
-                            player.life <= 8000
+                            "life went negative in game $game",
+                            player.life >= 0
                         )
                         assertTrue(
                             "monster zone count changed in game $game",

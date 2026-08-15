@@ -94,9 +94,41 @@ class CardTextTest {
         val lines = EffectTextRenderer.render(card, master).lines()
         assertEquals("【場所】手札", lines[0])
         assertEquals("【コスト】ライフを500ポイント払う", lines[1])
-        assertTrue(lines[2].startsWith("①："))
+        // 発動後の指定が無い魔法・罠は、既定の「墓地へ送る」が明記される。
+        assertEquals("【発動後】墓地へ送る", lines[2])
+        assertTrue(lines[3].startsWith("①："))
         // 番号の直後に書いたコストは、その効果にだけ掛かる。
-        assertTrue(lines[3].startsWith("②：【コスト】手札を1枚捨てる"))
+        assertTrue(lines[4].startsWith("②：【コスト】手札を1枚捨てる"))
+    }
+
+    @Test
+    fun `after activation and limits appear in the card text`() {
+        val card = CardDef(
+            id = "x", name = "永続テスト", kind = CardKind.SPELL,
+            effect = EffectText(
+                afterActivation = AfterActivation.STAY_ON_FIELD,
+                limits = listOf(UsageLimit(LimitScope.THIS_CARD, 1)),
+                clauses = listOf(
+                    EffectClause(
+                        actions = listOf(RecoverAction(PlayerRef.SELF, 500)),
+                        limits = listOf(UsageLimit(LimitScope.SAME_NAME, 2))
+                    )
+                )
+            )
+        )
+        val text = EffectTextRenderer.render(card, master)
+        assertTrue(text.contains("【制限】このカードは1ターンに1度しか発動できない"))
+        assertTrue(text.contains("【発動後】フィールドに残す"))
+        assertTrue(text.contains("同名カードを含めて1ターンに2度まで発動できる"))
+    }
+
+    @Test
+    fun `category limits name the category`() {
+        val limit = UsageLimit(LimitScope.CATEGORY, 1, "cat-araragi")
+        assertEquals(
+            "「アララギ」カードを含めて1ターンに1度しか発動できない",
+            EffectTextRenderer.limitToText(limit, master, cardWide = true)
+        )
     }
 
     @Test

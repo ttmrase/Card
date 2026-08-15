@@ -310,6 +310,264 @@ class GameRulesTest {
         assertFalse(player.hand.any { it.card.name == "無関係" })
     }
 
+    // --- 【場所】と発動経路 ---------------------------------------------
+
+    @Test
+    fun `a spell with no location can be activated straight from the hand`() = runBlocking {
+        val (state, engine) = freshGame()
+        val player = state.players[0]
+        // 【場所】を書いていない魔法は「フィールドで発動」＝手札から場に出して発動する。
+        val spell = inst(
+            CardDef(
+                id = newId(), name = "通常魔法", kind = CardKind.SPELL,
+                effect = EffectText(
+                    clauses = listOf(EffectClause(actions = listOf(DrawAction(PlayerRef.SELF, 1))))
+                )
+            )
+        )
+        player.hand.add(spell)
+        player.deck.add(inst(monster("山札", 4, 100, 100)))
+
+        assertTrue(engine.activatableCards(player).any { it === spell })
+        engine.activateCard(spell, player)
+
+        assertTrue("発動後は既定で墓地へ送られる", player.graveyard.any { it === spell })
+        assertTrue(player.spellsAndTraps.isEmpty())
+        assertTrue(player.hand.any { it.card.name == "山札" })
+    }
+
+    @Test
+    fun `a set spell can still be activated from the field`() = runBlocking {
+        val (state, engine) = freshGame()
+        val player = state.players[0]
+        val spell = inst(
+            CardDef(
+                id = newId(), name = "通常魔法", kind = CardKind.SPELL,
+                effect = EffectText(
+                    clauses = listOf(EffectClause(actions = listOf(RecoverAction(PlayerRef.SELF, 100))))
+                )
+            )
+        )
+        player.hand.add(spell)
+        engine.setSpellTrap(spell, player)
+        assertTrue(spell.faceDown)
+
+        assertTrue(engine.activatableCards(player).any { it === spell })
+        engine.activateCard(spell, player)
+        assertEquals(8100, player.life)
+        assertTrue(player.graveyard.any { it === spell })
+    }
+
+    @Test
+    fun `a hand-location spell resolves without taking a spell trap zone`() = runBlocking {
+        val (state, engine) = freshGame()
+        val player = state.players[0]
+        val spell = inst(
+            CardDef(
+                id = newId(), name = "手札発動", kind = CardKind.SPELL,
+                effect = EffectText(
+                    locations = listOf(ActivationLocation.HAND),
+                    clauses = listOf(EffectClause(actions = listOf(RecoverAction(PlayerRef.SELF, 300))))
+                )
+            )
+        )
+        player.hand.add(spell)
+        // 魔法・罠ゾーンを埋めても、手札で発動する魔法は影響を受けない。
+        repeat(5) { index ->
+            player.spellTrapZones[index] = inst(
+                CardDef(id = newId(), name = "埋め草$index", kind = CardKind.SPELL)
+            )
+        }
+        assertTrue(engine.activatableCards(player).any { it === spell })
+        engine.activateCard(spell, player)
+        assertEquals(8300, player.life)
+        assertTrue(player.graveyard.any { it === spell })
+    }
+
+    @Test
+    fun `traps must be set before use and cannot be played from the hand`() {
+        val (state, engine) = freshGame()
+        val player = state.players[0]
+        val trap = inst(
+            CardDef(
+                id = newId(), name = "普通の罠", kind = CardKind.TRAP,
+                effect = EffectText(
+                    clauses = listOf(
+                        EffectClause(actions = listOf(DamageAction(PlayerRef.OPPONENT, 500)))
+                    )
+                )
+            )
+        )
+        player.hand.add(trap)
+        // 魔法と違い、手札から直接は発動できない。
+        assertFalse(engine.activatableCards(player).any { it === trap })
+
+        val handTrap = inst(
+            CardDef(
+                id = newId(), name = "手札の罠", kind = CardKind.TRAP,
+                effect = EffectText(
+                    locations = listOf(ActivationLocation.HAND),
+                    clauses = listOf(
+                        EffectClause(actions = listOf(DamageAction(PlayerRef.OPPONENT, 500)))
+                    )
+                )
+            )
+        )
+        player.hand.add(handTrap)
+        // 【場所】に手札と書いた罠だけは手札から発動できる。
+        assertTrue(engine.activatableCards(player).any { it === handTrap })
+    }
+
+    // --- 【発動後】 -------------------------------------------------------
+
+    @Test
+    fun `a continuous spell stays on the field after resolving`() = runBlocking {
+        val (state, engine) = freshGame()
+        val player = state.players[0]
+        val spell = inst(
+            CardDef(
+                id = newId(), name = "永続魔法", kind = CardKind.SPELL,
+                effect = EffectText(
+                    afterActivation = AfterActivation.STAY_ON_FIELD,
+                    clauses = listOf(EffectClause(actions = listOf(RecoverAction(PlayerRef.SELF, 500))))
+                )
+            )
+        )
+        player.hand.add(spell)
+
+        engine.activateCard(spell, player)
+        assertEquals(8500, player.life)
+        assertTrue("フィールドに残る", player.spellsAndTraps.any { it === spell })
+        assertTrue(player.graveyard.isEmpty())
+        assertTrue("表側で残る", !spell.faceDown)
+    }
+
+    @Test
+    fun `after activation can banish the card instead`() = runBlocking {
+        val (state, engine) = freshGame()
+        val player = state.players[0]
+        val spell = inst(
+            CardDef(
+                id = newId(), name = "除外魔法", kind = CardKind.SPELL,
+                effect = EffectText(
+                    afterActivation = AfterActivation.BANISH,
+                    clauses = listOf(EffectClause(actions = listOf(RecoverAction(PlayerRef.SELF, 100))))
+                )
+            )
+        )
+        player.hand.add(spell)
+        engine.activateCard(spell, player)
+        assertTrue(player.banished.any { it === spell })
+        assertTrue(player.graveyard.isEmpty())
+    }
+
+    // --- 【制限】 ---------------------------------------------------------
+
+    @Test
+    fun `a per-card limit caps how often one card activates in a turn`() = runBlocking {
+        val (state, engine) = freshGame()
+        val player = state.players[0]
+        val spell = inst(
+            CardDef(
+                id = newId(), name = "永続回復", kind = CardKind.SPELL,
+                effect = EffectText(
+                    afterActivation = AfterActivation.STAY_ON_FIELD,
+                    limits = listOf(UsageLimit(LimitScope.THIS_CARD, 2)),
+                    clauses = listOf(EffectClause(actions = listOf(RecoverAction(PlayerRef.SELF, 100))))
+                )
+            )
+        )
+        player.hand.add(spell)
+
+        engine.activateCard(spell, player)
+        engine.activateCard(spell, player)
+        assertEquals(8200, player.life)
+        // 3度目は制限に掛かる。
+        assertTrue(engine.activatableClauses(spell, player).isEmpty())
+        engine.activateCard(spell, player)
+        assertEquals(8200, player.life)
+
+        // ターンが変われば回数はリセットされる。
+        player.activationsThisTurn.clear()
+        assertTrue(engine.activatableClauses(spell, player).isNotEmpty())
+    }
+
+    @Test
+    fun `a same-name limit is shared between copies of the card`() = runBlocking {
+        val (state, engine) = freshGame()
+        val player = state.players[0]
+        val definition = CardDef(
+            id = newId(), name = "同名制限", kind = CardKind.SPELL,
+            effect = EffectText(
+                limits = listOf(UsageLimit(LimitScope.SAME_NAME, 1)),
+                clauses = listOf(EffectClause(actions = listOf(RecoverAction(PlayerRef.SELF, 100))))
+            )
+        )
+        val first = inst(definition)
+        val second = inst(definition)
+        player.hand.addAll(listOf(first, second))
+
+        engine.activateCard(first, player)
+        assertEquals(8100, player.life)
+        // 別の1枚でも、同名なのでもう発動できない。
+        assertTrue(engine.activatableClauses(second, player).isEmpty())
+        engine.activateCard(second, player)
+        assertEquals(8100, player.life)
+    }
+
+    @Test
+    fun `a category limit is shared between different cards of that category`() = runBlocking {
+        val (state, engine) = freshGame()
+        val player = state.players[0]
+        val categoryId = newId()
+
+        fun member(name: String) = inst(
+            CardDef(
+                id = newId(), name = name, kind = CardKind.SPELL,
+                categoryIds = listOf(categoryId),
+                effect = EffectText(
+                    limits = listOf(UsageLimit(LimitScope.CATEGORY, 1, categoryId)),
+                    clauses = listOf(EffectClause(actions = listOf(RecoverAction(PlayerRef.SELF, 100))))
+                )
+            )
+        )
+        val a = member("カテゴリ魔法A")
+        val b = member("カテゴリ魔法B")
+        player.hand.addAll(listOf(a, b))
+
+        engine.activateCard(a, player)
+        assertEquals(8100, player.life)
+        // 名前は違うが同じカテゴリなので、1ターンの枠を共有する。
+        assertTrue(engine.activatableClauses(b, player).isEmpty())
+    }
+
+    @Test
+    fun `a per-effect limit only restricts that numbered effect`() = runBlocking {
+        val (state, engine) = freshGame()
+        val player = state.players[0]
+        val spell = inst(
+            CardDef(
+                id = newId(), name = "二つの効果", kind = CardKind.SPELL,
+                effect = EffectText(
+                    afterActivation = AfterActivation.STAY_ON_FIELD,
+                    clauses = listOf(
+                        EffectClause(
+                            actions = listOf(RecoverAction(PlayerRef.SELF, 100)),
+                            limits = listOf(UsageLimit(LimitScope.THIS_CARD, 1))
+                        ),
+                        EffectClause(actions = listOf(RecoverAction(PlayerRef.SELF, 200)))
+                    )
+                )
+            )
+        )
+        player.hand.add(spell)
+
+        assertEquals(listOf(0, 1), engine.activatableClauses(spell, player))
+        engine.activateCard(spell, player) // ① を選ぶ（ScriptedInteraction は先頭を選ぶ）
+        // ① だけが締め切られ、② はまだ使える。
+        assertEquals(listOf(1), engine.activatableClauses(spell, player))
+    }
+
     @Test
     fun `losing all life ends the duel`() {
         val (state, engine) = freshGame()

@@ -114,6 +114,39 @@ enum class ActivationLocation(val label: String) {
     }
 }
 
+/**
+ * 【発動後】発動して解決したあと、そのカードをどうするか。
+ * 省略した場合は「墓地へ送る」。通常魔法は墓地へ、永続魔法はフィールドに残す、
+ * といった使い分けを想定している。
+ */
+@Serializable
+enum class AfterActivation(val label: String) {
+    TO_GRAVE("墓地へ送る"),
+    STAY_ON_FIELD("フィールドに残す"),
+    BANISH("除外する"),
+    TO_HAND("手札に戻す"),
+    TO_DECK("デッキに戻す");
+
+    companion object {
+        val all: List<AfterActivation> get() = entries
+
+        /** 記述が省略されている場合の既定。 */
+        val DEFAULT: AfterActivation get() = TO_GRAVE
+    }
+}
+
+/** 【制限】発動回数を数える単位。 */
+@Serializable
+enum class LimitScope(val label: String) {
+    THIS_CARD("このカード"),
+    SAME_NAME("同名カード"),
+    CATEGORY("カテゴリ");
+
+    companion object {
+        val all: List<LimitScope> get() = entries
+    }
+}
+
 /** 効果が発動するタイミング。 */
 @Serializable
 enum class EffectTiming(val label: String) {

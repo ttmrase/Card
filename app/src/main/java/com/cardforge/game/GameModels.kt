@@ -37,9 +37,6 @@ class CardInstance(
     var hasAttacked by mutableStateOf(false)
     var positionChangedThisTurn by mutableStateOf(false)
 
-    /** このターンすでに使った効果番号（1ターンに1度の制限用）。 */
-    val usedClausesThisTurn: SnapshotStateList<Int> = mutableStateListOf()
-
     val atkValue: Int get() = (card.atk + atkMod).coerceAtLeast(0)
     val defValue: Int get() = (card.def + defMod).coerceAtLeast(0)
 
@@ -53,11 +50,21 @@ class CardInstance(
     fun resetForNewTurn() {
         hasAttacked = false
         positionChangedThisTurn = false
-        usedClausesThisTurn.clear()
     }
 
     override fun toString(): String = "${card.name}#${uid.take(4)}"
 }
+
+/**
+ * そのターンに発動した効果の記録。【制限】を同名カードやカテゴリの単位で
+ * 数えられるよう、カード本体ではなくプレイヤー側に持たせる。
+ */
+data class ActivationRecord(
+    val instanceUid: String,
+    val cardName: String,
+    val categoryIds: List<String>,
+    val clauseIndex: Int
+)
 
 class PlayerState(
     val index: Int,
@@ -77,6 +84,9 @@ class PlayerState(
 
     /** そのターンに通常召喚（セット含む）を使ったか。 */
     var normalSummonUsed by mutableStateOf(false)
+
+    /** そのターンに発動した効果の記録（【制限】の判定に使う）。 */
+    val activationsThisTurn: SnapshotStateList<ActivationRecord> = mutableStateListOf()
 
     val monsters: List<CardInstance> get() = monsterZones.filterNotNull()
     val spellsAndTraps: List<CardInstance> get() = spellTrapZones.filterNotNull()

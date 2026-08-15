@@ -187,6 +187,20 @@ object EffectTextRenderer {
         is MillCost -> "自分のデッキの上からカードを${cost.count}枚墓地へ送る"
     }
 
+    /** 【制限】の一文。 */
+    fun limitToText(limit: UsageLimit, master: MasterData, cardWide: Boolean): String {
+        val times = limit.times.coerceAtLeast(1)
+        val prefix = when (limit.scope) {
+            LimitScope.THIS_CARD -> if (cardWide) "このカードは" else "この効果は"
+            LimitScope.SAME_NAME -> "同名カードを含めて"
+            LimitScope.CATEGORY ->
+                if (limit.categoryId != null) "「${master.categoryName(limit.categoryId)}」カードを含めて"
+                else "このカードと同じカテゴリのカードを含めて"
+        }
+        return if (times == 1) "${prefix}1ターンに1度しか発動できない"
+        else "${prefix}1ターンに${times}度まで発動できる"
+    }
+
     // -----------------------------------------------------------------------
     // カード全体
     // -----------------------------------------------------------------------
@@ -213,6 +227,15 @@ object EffectTextRenderer {
         if (effect.costs.isNotEmpty()) {
             lines += "【コスト】" + effect.costs.joinToString("、") { costToText(it, master) }
         }
+        if (effect.limits.isNotEmpty()) {
+            lines += "【制限】" + effect.limits.joinToString("、") {
+                limitToText(it, master, cardWide = true)
+            }
+        }
+        if (card.kind != CardKind.MONSTER) {
+            // 記述が省略されている場合は「墓地へ送る」。
+            lines += "【発動後】" + (effect.afterActivation ?: AfterActivation.DEFAULT).label
+        }
 
         // 各効果。
         effect.clauses.forEachIndexed { index, clause ->
@@ -234,13 +257,18 @@ object EffectTextRenderer {
                     "【コスト】" + clause.costs.joinToString("、") { costToText(it, master) } + " "
                 )
             }
+            if (clause.afterActivation != null && card.kind != CardKind.MONSTER) {
+                sb.append("【発動後】" + clause.afterActivation.label + " ")
+            }
             if (card.kind == CardKind.MONSTER && clause.timing != EffectTiming.ON_ACTIVATE) {
                 sb.append(clause.timing.label + "、")
             }
 
             sb.append(clause.actions.joinToString("。その後、") { actionToText(it, master) })
             sb.append("。")
-            if (clause.oncePerTurn) sb.append("この効果は1ターンに1度しか使用できない。")
+            effect.clauseLimitsFor(index).forEach { limit ->
+                sb.append(limitToText(limit, master, cardWide = false) + "。")
+            }
             lines += sb.toString()
         }
 

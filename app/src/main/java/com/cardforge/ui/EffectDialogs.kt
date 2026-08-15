@@ -420,3 +420,72 @@ fun CostDialog(
         )
     }
 }
+
+// ===========================================================================
+// 制限（発動回数）
+// ===========================================================================
+
+/**
+ * 「1ターンにn度まで」の制限を作るダイアログ。
+ * 数える単位は、このカード1枚・同名カード全体・カテゴリ単位から選ぶ。
+ */
+@Composable
+fun LimitDialog(
+    master: MasterData,
+    onDismiss: () -> Unit,
+    onConfirm: (UsageLimit) -> Unit
+) {
+    var scope by remember { mutableStateOf(LimitScope.THIS_CARD) }
+    var times by remember { mutableIntStateOf(1) }
+    var categoryId by remember { mutableStateOf<String?>(null) }
+
+    fun build() = UsageLimit(
+        scope = scope,
+        times = times.coerceAtLeast(1),
+        categoryId = if (scope == LimitScope.CATEGORY) categoryId else null
+    )
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("【制限】を追加") },
+        text = {
+            Column(
+                Modifier
+                    .heightIn(max = 440.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Dropdown("数える単位", LimitScope.all, scope, { it.label }) { scope = it }
+                NumberField("1ターンに発動できる回数", times) { times = it }
+
+                if (scope == LimitScope.CATEGORY) {
+                    Dropdown(
+                        label = "対象のカテゴリ",
+                        items = master.categories,
+                        selected = master.categories.firstOrNull { it.id == categoryId },
+                        itemLabel = { it.name },
+                        placeholder = "このカードのカテゴリ"
+                    ) { categoryId = it.id }
+                    if (categoryId != null) {
+                        TextButton(onClick = { categoryId = null }) {
+                            Text("このカードのカテゴリを使う")
+                        }
+                    }
+                }
+
+                HorizontalDivider()
+                Surface(color = Surface2, shape = MaterialTheme.shapes.small) {
+                    Text(
+                        EffectTextRenderer.limitToText(build(), master, cardWide = true) + "。",
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(10.dp)
+                    )
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = { onConfirm(build()) }) { Text("決定") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("キャンセル") } }
+    )
+}
