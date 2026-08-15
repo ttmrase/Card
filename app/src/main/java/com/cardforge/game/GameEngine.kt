@@ -145,9 +145,21 @@ class GameEngine(
         if (toBottom) loc.player.deck.add(inst) else loc.player.deck.add(0, inst)
     }
 
-    suspend fun destroy(inst: CardInstance) {
+    /** [byBattle] が true なら戦闘破壊。永続効果の破壊耐性はここで見る。 */
+    suspend fun destroy(inst: CardInstance, byBattle: Boolean = false) {
         val loc = locate(inst) ?: return
         val wasOnField = loc.zone == ZoneType.MONSTER_ZONE || loc.zone == ZoneType.SPELL_TRAP_ZONE
+
+        if (wasOnField) {
+            val kind =
+                if (byBattle) ProtectionKind.BATTLE_DESTRUCTION
+                else ProtectionKind.EFFECT_DESTRUCTION
+            if (hasProtection(inst, kind)) {
+                log("「${inst.card.name}」は${kind.label}。")
+                return
+            }
+        }
+
         log("${loc.player.name}の「${inst.card.name}」は破壊された。")
         sendToGraveyard(inst)
         if (wasOnField) {
@@ -156,6 +168,91 @@ class GameEngine(
                 GameEvent(GameEventType.SENT_TO_GRAVEYARD, loc.player.index, inst)
             )
         }
+    }
+
+    // =======================================================================
+    // 永続効果
+    // =======================================================================
+
+    /**
+     * 永続効果を調べている最中かどうか。
+     * 適用範囲の絞り込みがまた永続効果を参照して堂々巡りになるのを防ぐ。
+     */
+    private var resolvingContinuous = false
+
+    /** 表側でフィールドにあり、永続効果を持っているカード。 */
+    private fun continuousSources(): List<Pair<CardInstance, PlayerState>> =
+        state.players.flatMap { player ->
+            (player.monsters + player.spellsAndTraps)
+                .filter { !it.faceDown && it.card.hasContinuous }
+                .map { it to player }
+        }
+
+    /** [source] の永続効果が [target] に掛かっているか。 */
+    private fun affects(
+        effect: ContinuousEffect,
+        source: CardInstance,
+        owner: PlayerState,
+        target: CardInstance
+    ): Boolean {
+        val scope = effect.scope ?: return target === source
+        return candidates(scope, owner, respectProtection = false).any { it === target }
+    }
+
+    private fun <T> withoutRecursion(fallback: T, block: () -> T): T {
+        if (resolvingContinuous) return fallback
+        resolvingContinuous = true
+        return try {
+            block()
+        } finally {
+            resolvingContinuous = false
+        }
+    }
+
+    /** 永続効果による攻撃力・守備力の増減。 */
+    private fun statBonus(target: CardInstance, stat: StatKind): Int =
+        withoutRecursion(0) {
+            continuousSources().sumOf { (source, owner) ->
+                source.card.continuous
+                    .filterIsInstance<StatBuffEffect>()
+                    .filter { it.stat == stat && affects(it, source, owner, target) }
+                    .sumOf { it.amount }
+            }
+        }
+
+    /** 永続効果込みの攻撃力。表示や戦闘の計算はこちらを使う。 */
+    fun atkOf(inst: CardInstance): Int =
+        (inst.atkValue + statBonus(inst, StatKind.ATK)).coerceAtLeast(0)
+
+    /** 永続効果込みの守備力。 */
+    fun defOf(inst: CardInstance): Int =
+        (inst.defValue + statBonus(inst, StatKind.DEF)).coerceAtLeast(0)
+
+    /** [target] が [kind] の耐性を持っているか。 */
+    fun hasProtection(target: CardInstance, kind: ProtectionKind): Boolean =
+        withoutRecursion(false) {
+            continuousSources().any { (source, owner) ->
+                source.card.continuous
+                    .filterIsInstance<ProtectionEffect>()
+                    .any { it.kind == kind && affects(it, source, owner, target) }
+            }
+        }
+
+    /** 永続効果で攻撃を封じられているか。 */
+    fun isAttackLocked(target: CardInstance): Boolean =
+        withoutRecursion(false) {
+            continuousSources().any { (source, owner) ->
+                source.card.continuous
+                    .filterIsInstance<CannotAttackEffect>()
+                    .any { affects(it, source, owner, target) }
+            }
+        }
+
+    /** 「相手の効果を受けない」カードは、相手の効果の対象に選べない。 */
+    private fun isUntouchableBy(target: CardInstance, actingPlayer: PlayerState): Boolean {
+        val owner = locate(target)?.player ?: return false
+        if (owner === actingPlayer) return false
+        return hasProtection(target, ProtectionKind.OPPONENT_EFFECTS)
     }
 
     // =======================================================================
@@ -187,10 +284,10 @@ class GameEngine(
             inst.card.kind == CardKind.MONSTER && filter.cmp.test(inst.card.level, filter.value)
 
         is AtkFilter ->
-            inst.card.kind == CardKind.MONSTER && filter.cmp.test(inst.atkValue, filter.value)
+            inst.card.kind == CardKind.MONSTER && filter.cmp.test(atkOf(inst), filter.value)
 
         is DefFilter ->
-            inst.card.kind == CardKind.MONSTER && filter.cmp.test(inst.defValue, filter.value)
+            inst.card.kind == CardKind.MONSTER && filter.cmp.test(defOf(inst), filter.value)
 
         is PositionFilter -> inst.displayPosition == filter.position
         is NameFilter -> inst.card.name.contains(filter.text, ignoreCase = true)
@@ -200,11 +297,16 @@ class GameEngine(
         filters.all { matches(inst, it) }
 
     /** [scope] が指す候補カードを列挙する。裏側のカードは中身を見るフィルタでは選べない。 */
-    fun candidates(scope: CardScope, controller: PlayerState): List<CardInstance> {
+    fun candidates(
+        scope: CardScope,
+        controller: PlayerState,
+        respectProtection: Boolean = true
+    ): List<CardInstance> {
         val hidesInfo = needsCardInfo(scope.filters)
         return playersFor(scope.who, controller)
             .flatMap { zoneCards(it, scope.zone) }
             .filter { !(hidesInfo && it.faceDown) }
+            .filter { !(respectProtection && isUntouchableBy(it, controller)) }
             .filter { matchesAll(it, scope.filters) }
     }
 
@@ -1119,6 +1221,7 @@ class GameEngine(
         val loc = locate(inst) ?: return false
         if (loc.zone != ZoneType.MONSTER_ZONE) return false
         if (loc.player !== state.turnPlayer) return false
+        if (isAttackLocked(inst)) return false
         return !inst.faceDown && inst.position == Position.ATTACK && !inst.hasAttacked
     }
 
@@ -1155,7 +1258,7 @@ class GameEngine(
                 return
             }
             log("${defendingPlayer.name}への直接攻撃！")
-            dealDamage(defendingPlayer, attacker.atkValue)
+            dealDamage(defendingPlayer, atkOf(attacker))
             return
         }
 
@@ -1167,29 +1270,29 @@ class GameEngine(
             log("「${target.card.name}」が反転した。")
         }
 
-        val attack = attacker.atkValue
+        val attack = atkOf(attacker)
         if (target.position == Position.ATTACK) {
-            val defenderAttack = target.atkValue
+            val defenderAttack = atkOf(target)
             when {
                 attack > defenderAttack -> {
                     dealDamage(defendingPlayer, attack - defenderAttack)
-                    destroy(target)
+                    destroy(target, byBattle = true)
                 }
 
                 attack < defenderAttack -> {
                     dealDamage(attackingPlayer, defenderAttack - attack)
-                    destroy(attacker)
+                    destroy(attacker, byBattle = true)
                 }
 
                 else -> {
-                    destroy(target)
-                    destroy(attacker)
+                    destroy(target, byBattle = true)
+                    destroy(attacker, byBattle = true)
                 }
             }
         } else {
-            val defense = target.defValue
+            val defense = defOf(target)
             when {
-                attack > defense -> destroy(target)
+                attack > defense -> destroy(target, byBattle = true)
                 attack < defense -> dealDamage(attackingPlayer, defense - attack)
                 else -> log("戦闘は相殺された。")
             }

@@ -216,16 +216,35 @@ object EffectTextRenderer {
         else "${prefix}1ターンに${times}度まで発動できる"
     }
 
+    /** 【永続効果】の1文。 */
+    fun continuousToText(effect: ContinuousEffect, master: MasterData): String {
+        val subject = effect.scope?.let { scopeToText(it, master, withCount = false) }
+            ?: "このカード"
+        return when (effect) {
+            is StatBuffEffect -> {
+                val verb = if (effect.amount >= 0) "アップする" else "ダウンする"
+                "${subject}の${effect.stat.label}は${kotlin.math.abs(effect.amount)}$verb"
+            }
+
+            is ProtectionEffect -> "${subject}は${effect.kind.label}"
+
+            is CannotAttackEffect -> "${subject}は攻撃できない"
+        }
+    }
+
     // -----------------------------------------------------------------------
     // カード全体
     // -----------------------------------------------------------------------
 
     /** カードの効果テキスト全体を組み立てる。効果を持たない場合は空文字。 */
     fun render(card: CardDef, master: MasterData): String {
-        val effect = card.effect ?: return ""
-        if (effect.isEmpty) return ""
-
         val lines = mutableListOf<String>()
+
+        // 永続効果は発動を必要としないので、先に書く。
+        card.continuous.forEach { lines += "【永続効果】" + continuousToText(it, master) + "。" }
+
+        val effect = card.effect
+        if (effect == null || effect.isEmpty) return lines.joinToString("\n")
 
         // 効果番号より前の共通指定。
         if (effect.locations.isNotEmpty()) {

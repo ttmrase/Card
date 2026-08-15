@@ -234,6 +234,35 @@ object DefaultData {
                 )
             ),
 
+            // --- 永続効果を持つモンスター ---
+            CardDef(
+                id = newId(),
+                name = "不滅の守護者",
+                kind = CardKind.MONSTER,
+                level = 6,
+                attributeId = light,
+                raceId = rock,
+                atk = 2000,
+                def = 2400,
+                flavor = "発動を必要とせず、表側で場にある限りずっと効いている。",
+                continuous = listOf(
+                    ProtectionEffect(
+                        scope = null,
+                        kind = ProtectionKind.OPPONENT_EFFECTS
+                    ),
+                    StatBuffEffect(
+                        scope = CardScope(
+                            who = PlayerRef.SELF,
+                            zone = ZoneType.MONSTER_ZONE,
+                            filters = listOf(RaceFilter(races[9].id)),
+                            selection = SelectionMode.ALL
+                        ),
+                        stat = StatKind.DEF,
+                        amount = 400
+                    )
+                )
+            ),
+
             // --- 手札で発動するモンスター（コストとして墓地へ送る） ---
             CardDef(
                 id = newId(),

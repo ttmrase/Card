@@ -1,5 +1,7 @@
 package com.cardforge.ui
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -8,6 +10,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -17,6 +20,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.cardforge.data.LibraryRepository
 import com.cardforge.model.*
+import androidx.compose.ui.platform.LocalContext
 import com.cardforge.text.EffectTextRenderer
 import com.cardforge.ui.theme.Danger
 import com.cardforge.ui.theme.Gold
@@ -31,6 +35,23 @@ fun DeckListScreen(
 ) {
     val library = repository.library
     var pendingDelete by remember { mutableStateOf<Deck?>(null) }
+    var exporting by remember { mutableStateOf<Deck?>(null) }
+    var message by remember { mutableStateOf<String?>(null) }
+    val context = LocalContext.current
+
+    // デッキと、そのデッキが使っているカードだけを書き出す。
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        val deck = exporting
+        exporting = null
+        if (uri == null || deck == null) return@rememberLauncherForActivityResult
+        message = runCatching {
+            val text = repository.exportDeck(deck)
+            context.contentResolver.openOutputStream(uri)?.use { it.write(text.toByteArray()) }
+            "「${deck.name}」を書き出しました。"
+        }.getOrElse { "書き出しに失敗しました。" }
+    }
 
     ScreenScaffold(
         title = "デッキ",
@@ -72,6 +93,12 @@ fun DeckListScreen(
                                     else MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
+                            IconButton(onClick = {
+                                exporting = deck
+                                exportLauncher.launch("cardforge-${deck.name}.json")
+                            }) {
+                                Icon(Icons.Default.FileDownload, contentDescription = "書き出す")
+                            }
                             IconButton(onClick = { pendingDelete = deck }) {
                                 Icon(
                                     Icons.Default.Delete,
@@ -85,6 +112,15 @@ fun DeckListScreen(
                 item { Spacer(Modifier.height(72.dp)) }
             }
         }
+    }
+
+    message?.let { text ->
+        AlertDialog(
+            onDismissRequest = { message = null },
+            title = { Text("お知らせ") },
+            text = { Text(text) },
+            confirmButton = { TextButton(onClick = { message = null }) { Text("OK") } }
+        )
     }
 
     pendingDelete?.let { deck ->
@@ -115,6 +151,7 @@ fun DeckEditScreen(
         mutableStateOf(original ?: Deck(id = newId(), name = "新しいデッキ"))
     }
     var query by remember { mutableStateOf("") }
+    var preview by remember { mutableStateOf<CardDef?>(null) }
 
     val counts = deck.cardIds.groupingBy { it }.eachCount()
     val visible = library.cards.filter {
@@ -131,6 +168,10 @@ fun DeckEditScreen(
         val index = deck.cardIds.lastIndexOf(cardId)
         if (index < 0) return
         deck = deck.copy(cardIds = deck.cardIds.toMutableList().also { it.removeAt(index) })
+    }
+
+    preview?.let { card ->
+        CardPreviewDialog(card = card, master = master, onDismiss = { preview = null })
     }
 
     ScreenScaffold(
@@ -185,7 +226,8 @@ fun DeckEditScreen(
                             count = counts[card.id] ?: 0,
                             summary = EffectTextRenderer.summary(card, master),
                             onAdd = { add(card.id) },
-                            onRemove = { remove(card.id) }
+                            onRemove = { remove(card.id) },
+                            onPreview = { preview = card }
                         )
                     }
                 }
@@ -200,10 +242,14 @@ private fun DeckCardRow(
     count: Int,
     summary: String,
     onAdd: () -> Unit,
-    onRemove: () -> Unit
+    onRemove: () -> Unit,
+    onPreview: () -> Unit
 ) {
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        // タップで1枚追加、長押しで効果を確認できる。
+        modifier = Modifier
+            .fillMaxWidth()
+            .tapOrHold(onClick = onAdd, onLongClick = onPreview),
         colors = CardDefaults.cardColors(containerColor = Surface1)
     ) {
         Row(

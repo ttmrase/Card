@@ -140,7 +140,7 @@ class AiController(
         while (!state.finished && guard++ < MAX_ATTACK_ITERATIONS) {
             val attacker = me.monsters
                 .filter { engine.canAttack(it) }
-                .maxByOrNull { it.atkValue } ?: break
+                .maxByOrNull { engine.atkOf(it) } ?: break
 
             val defenders = engine.attackTargets()
             if (defenders.isEmpty()) {
@@ -163,21 +163,21 @@ class AiController(
         attacker: CardInstance,
         defenders: List<CardInstance>
     ): CardInstance? {
-        val attack = attacker.atkValue
+        val attack = engine.atkOf(attacker)
 
         // 裏側のモンスターは中身が読めないので、そこそこの打点なら殴ってみる。
         val faceDown = defenders.filter { it.faceDown }
         val faceUp = defenders.filter { !it.faceDown }
 
         val beatable = faceUp.filter { defender ->
-            if (defender.position == Position.ATTACK) attack > defender.atkValue
-            else attack > defender.defValue
+            if (defender.position == Position.ATTACK) attack > engine.atkOf(defender)
+            else attack > engine.defOf(defender)
         }
         // 攻撃表示の相手を優先し、その中で一番打点が高いものを狙う。
         val best = beatable
             .sortedWith(
                 compareByDescending<CardInstance> { it.position == Position.ATTACK }
-                    .thenByDescending { it.atkValue }
+                    .thenByDescending { engine.atkOf(it) }
             )
             .firstOrNull()
         if (best != null) return best

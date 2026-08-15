@@ -1,9 +1,13 @@
 package com.cardforge.ui
 
 import android.graphics.BitmapFactory
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -22,7 +26,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.cardforge.model.CardDef
 import com.cardforge.model.CardKind
+import com.cardforge.model.MasterData
+import com.cardforge.text.EffectTextRenderer
 import com.cardforge.ui.theme.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -231,6 +238,71 @@ fun Chip(
     ) {
         Text(text, fontSize = 12.sp, color = if (selected) color else Color(0xFFC4BCE0))
     }
+}
+
+/**
+ * タップと長押しを両方受ける修飾子。
+ * どの画面でも「長押しでカードの効果を確認できる」ようにするために使う。
+ */
+@OptIn(ExperimentalFoundationApi::class)
+fun Modifier.tapOrHold(
+    onClick: () -> Unit,
+    onLongClick: () -> Unit
+): Modifier = this.combinedClickable(onClick = onClick, onLongClick = onLongClick)
+
+/**
+ * カードの内容を一覧できるダイアログ。
+ * [statLine] にデュエル中の実際の攻守など、その場の値を渡せる。
+ */
+@Composable
+fun CardPreviewDialog(
+    card: CardDef,
+    master: MasterData,
+    statLine: String? = null,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(card.name) },
+        text = {
+            Column(
+                Modifier
+                    .heightIn(max = 440.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                CardArt(
+                    imagePath = card.imagePath,
+                    kind = card.kind,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(170.dp)
+                )
+                Text(statLine ?: EffectTextRenderer.summary(card, master), color = Gold)
+                if (card.categoryIds.isNotEmpty()) {
+                    Text(
+                        "カテゴリ: " + card.categoryIds.joinToString("、") {
+                            master.categoryName(it)
+                        },
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+                val text = EffectTextRenderer.render(card, master)
+                Text(
+                    text.ifBlank { card.flavor.ifBlank { "効果を持たないカード。" } },
+                    style = MaterialTheme.typography.bodySmall
+                )
+                if (text.isNotBlank() && card.flavor.isNotBlank()) {
+                    Text(
+                        card.flavor,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("閉じる") } }
+    )
 }
 
 @Composable

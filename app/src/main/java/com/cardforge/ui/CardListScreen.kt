@@ -1,5 +1,7 @@
 package com.cardforge.ui
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -8,6 +10,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.FileDownload
+import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -17,6 +21,7 @@ import androidx.compose.ui.unit.dp
 import com.cardforge.data.LibraryRepository
 import com.cardforge.model.CardDef
 import com.cardforge.model.CardKind
+import androidx.compose.ui.platform.LocalContext
 import com.cardforge.text.EffectTextRenderer
 import com.cardforge.ui.theme.Surface1
 
@@ -31,6 +36,39 @@ fun CardListScreen(
     var query by remember { mutableStateOf("") }
     var kindFilter by remember { mutableStateOf<CardKind?>(null) }
     var pendingDelete by remember { mutableStateOf<CardDef?>(null) }
+    var preview by remember { mutableStateOf<CardDef?>(null) }
+    var message by remember { mutableStateOf<String?>(null) }
+    val context = LocalContext.current
+
+    // 書き出しは端末のファイルとして保存する。イラストも埋め込まれる。
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        message = runCatching {
+            val text = repository.exportAll()
+            context.contentResolver.openOutputStream(uri)?.use { it.write(text.toByteArray()) }
+            "カード${library.cards.size}枚とデッキ${library.decks.size}個を書き出しました。"
+        }.getOrElse { "書き出しに失敗しました。" }
+    }
+
+    val importLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        message = runCatching {
+            val text = context.contentResolver.openInputStream(uri)
+                ?.use { it.readBytes().decodeToString() }
+                ?: return@runCatching "ファイルを読み込めませんでした。"
+            repository.importExchange(text).fold(
+                onSuccess = { summary ->
+                    "取り込みました。新規カード${summary.addedCards}枚、" +
+                        "更新${summary.updatedCards}枚、デッキ${summary.addedDecks}個。"
+                },
+                onFailure = { "このファイルは読み込めませんでした。" }
+            )
+        }.getOrElse { "取り込みに失敗しました。" }
+    }
 
     val visible = library.cards.filter { card ->
         (kindFilter == null || card.kind == kindFilter) &&
@@ -40,6 +78,14 @@ fun CardListScreen(
     ScreenScaffold(
         title = "カード (${library.cards.size})",
         onBack = onBack,
+        actions = {
+            IconButton(onClick = { importLauncher.launch(arrayOf("application/json", "*/*")) }) {
+                Icon(Icons.Default.FileUpload, contentDescription = "インポート")
+            }
+            IconButton(onClick = { exportLauncher.launch("cardforge-cards.json") }) {
+                Icon(Icons.Default.FileDownload, contentDescription = "エクスポート")
+            }
+        },
         floatingAction = {
             FloatingActionButton(onClick = onCreate) {
                 Icon(Icons.Default.Add, contentDescription = "カードを作成")
@@ -85,6 +131,7 @@ fun CardListScreen(
                             card = card,
                             summary = EffectTextRenderer.summary(card, library.master),
                             onClick = { onEdit(card.id) },
+                            onLongClick = { preview = card },
                             onDuplicate = { repository.duplicateCard(card.id) },
                             onDelete = { pendingDelete = card }
                         )
@@ -93,6 +140,23 @@ fun CardListScreen(
                 }
             }
         }
+    }
+
+    preview?.let { card ->
+        CardPreviewDialog(
+            card = card,
+            master = library.master,
+            onDismiss = { preview = null }
+        )
+    }
+
+    message?.let { text ->
+        AlertDialog(
+            onDismissRequest = { message = null },
+            title = { Text("お知らせ") },
+            text = { Text(text) },
+            confirmButton = { TextButton(onClick = { message = null }) { Text("OK") } }
+        )
     }
 
     pendingDelete?.let { card ->
@@ -114,13 +178,14 @@ private fun CardRow(
     card: CardDef,
     summary: String,
     onClick: () -> Unit,
+    onLongClick: () -> Unit,
     onDuplicate: () -> Unit,
     onDelete: () -> Unit
 ) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { onClick() },
+            .tapOrHold(onClick = onClick, onLongClick = onLongClick),
         colors = CardDefaults.cardColors(containerColor = Surface1)
     ) {
         Row(
@@ -143,6 +208,7 @@ private fun CardRow(
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     Chip(card.kind.label, selected = true, color = kindColor(card.kind))
                     if (card.hasEffect) Chip("効果")
+                    if (card.hasContinuous) Chip("永続")
                 }
             }
             IconButton(onClick = onDuplicate) {

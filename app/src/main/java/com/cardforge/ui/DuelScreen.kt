@@ -96,7 +96,8 @@ fun DuelScreen(
                 zones = top.spellTrapZones,
                 ownerIndex = top.index,
                 bottomIndex = bottomIndex,
-                onClick = { detail = it }
+                onClick = { detail = it },
+                onLongClick = { detail = it }
             )
             ZoneRow(
                 zones = top.monsterZones,
@@ -111,7 +112,8 @@ fun DuelScreen(
                     } else {
                         detail = card
                     }
-                }
+                },
+                onLongClick = { detail = it }
             )
 
             // ---- 中央のコントロール -------------------------------------
@@ -135,13 +137,15 @@ fun DuelScreen(
                 zones = bottom.monsterZones,
                 ownerIndex = bottom.index,
                 bottomIndex = bottomIndex,
-                onClick = { if (interactive) selected = it else detail = it }
+                onClick = { if (interactive) selected = it else detail = it },
+                onLongClick = { detail = it }
             )
             ZoneRow(
                 zones = bottom.spellTrapZones,
                 ownerIndex = bottom.index,
                 bottomIndex = bottomIndex,
-                onClick = { if (interactive) selected = it else detail = it }
+                onClick = { if (interactive) selected = it else detail = it },
+                onLongClick = { detail = it }
             )
             PlayerBanner(
                 player = bottom,
@@ -160,8 +164,11 @@ fun DuelScreen(
                     FieldCard(
                         inst = card,
                         revealed = true,
+                        atk = engine.atkOf(card),
+                        def = engine.defOf(card),
                         modifier = Modifier.size(width = 64.dp, height = 90.dp),
-                        onClick = { if (interactive) selected = card else detail = card }
+                        onClick = { if (interactive) selected = card else detail = card },
+                        onLongClick = { detail = card }
                     )
                 }
             }
@@ -200,7 +207,17 @@ fun DuelScreen(
     }
 
     detail?.let { card ->
-        CardDetailDialog(inst = card, master = master, onDismiss = { detail = null })
+        CardPreviewDialog(
+            card = card.card,
+            master = master,
+            statLine = if (card.card.kind == CardKind.MONSTER) {
+                "★${card.card.level} " +
+                    "${master.attributeName(card.card.attributeId)}/" +
+                    "${master.raceName(card.card.raceId)} " +
+                    "ATK ${engine.atkOf(card)} / DEF ${engine.defOf(card)}"
+            } else null,
+            onDismiss = { detail = null }
+        )
     }
 
     zoneViewer?.let { (title, cards) ->
@@ -333,7 +350,8 @@ private fun ZoneRow(
     ownerIndex: Int,
     bottomIndex: Int,
     highlight: Boolean = false,
-    onClick: (CardInstance) -> Unit
+    onClick: (CardInstance) -> Unit,
+    onLongClick: (CardInstance) -> Unit
 ) {
     Row(
         Modifier.fillMaxWidth(),
@@ -351,7 +369,8 @@ private fun ZoneRow(
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(74.dp),
-                        onClick = { onClick(card) }
+                        onClick = { onClick(card) },
+                        onLongClick = { onLongClick(card) }
                     )
                 }
             }
@@ -377,7 +396,11 @@ private fun FieldCard(
     revealed: Boolean,
     modifier: Modifier = Modifier,
     highlight: Boolean = false,
-    onClick: () -> Unit
+    /** 永続効果込みの値。渡されなければカード自身の値を表示する。 */
+    atk: Int? = null,
+    def: Int? = null,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit = onClick
 ) {
     val borderColor = when {
         highlight -> Danger
@@ -390,7 +413,7 @@ private fun FieldCard(
             .clip(RoundedCornerShape(5.dp))
             .background(Surface2)
             .border(1.5.dp, borderColor, RoundedCornerShape(5.dp))
-            .clickable { onClick() }
+            .tapOrHold(onClick = onClick, onLongClick = onLongClick)
     ) {
         if (!revealed) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -418,7 +441,7 @@ private fun FieldCard(
             )
             if (inst.card.kind == CardKind.MONSTER) {
                 Text(
-                    "${inst.atkValue}/${inst.defValue}",
+                    "${atk ?: inst.atkValue}/${def ?: inst.defValue}",
                     fontSize = 8.sp,
                     color = Gold,
                     textAlign = TextAlign.Center,
@@ -631,45 +654,6 @@ private fun ActionButton(label: String, enabled: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
-private fun CardDetailDialog(inst: CardInstance, master: MasterData, onDismiss: () -> Unit) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(inst.card.name) },
-        text = {
-            Column(
-                Modifier
-                    .heightIn(max = 420.dp)
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                CardArt(
-                    imagePath = inst.card.imagePath,
-                    kind = inst.card.kind,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(160.dp)
-                )
-                Text(EffectTextRenderer.summary(inst.card, master), color = Gold)
-                if (inst.card.categoryIds.isNotEmpty()) {
-                    Text(
-                        "カテゴリ: " + inst.card.categoryIds.joinToString("、") {
-                            master.categoryName(it)
-                        },
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                }
-                val text = EffectTextRenderer.render(inst.card, master)
-                Text(
-                    text.ifBlank { inst.card.flavor.ifBlank { "効果を持たないカード。" } },
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
-        },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("閉じる") } }
-    )
-}
-
-@Composable
 private fun PromptDialog(
     prompt: DuelPrompt,
     master: MasterData,
@@ -718,6 +702,7 @@ private fun CardSelectionDialog(
     who: String
 ) {
     val picked = remember(prompt) { mutableStateListOf<CardInstance>() }
+    var preview by remember(prompt) { mutableStateOf<CardInstance?>(null) }
 
     AlertDialog(
         onDismissRequest = {},
@@ -728,7 +713,7 @@ private fun CardSelectionDialog(
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 Text(
-                    "選択 ${picked.size} / ${prompt.max}",
+                    "選択 ${picked.size} / ${prompt.max}　（長押しで効果を確認）",
                     style = MaterialTheme.typography.labelSmall,
                     color = Gold
                 )
@@ -740,13 +725,17 @@ private fun CardSelectionDialog(
                             shape = RoundedCornerShape(6.dp),
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clickable {
-                                    if (isPicked) {
-                                        picked.removeAll { it === card }
-                                    } else if (picked.size < prompt.max) {
-                                        picked.add(card)
-                                    }
-                                }
+                                .tapOrHold(
+                                    onClick = {
+                                        if (isPicked) {
+                                            picked.removeAll { it === card }
+                                        } else if (picked.size < prompt.max) {
+                                            picked.add(card)
+                                        }
+                                    },
+                                    // デッキをサーチしているときなどに効果を確かめられる。
+                                    onLongClick = { preview = card }
+                                )
                         ) {
                             Row(
                                 Modifier.padding(8.dp),
@@ -794,6 +783,14 @@ private fun CardSelectionDialog(
             }
         }
     )
+
+    preview?.let { card ->
+        CardPreviewDialog(
+            card = card.card,
+            master = master,
+            onDismiss = { preview = null }
+        )
+    }
 }
 
 /** 墓地や除外ゾーンの中身を一覧するダイアログ。 */

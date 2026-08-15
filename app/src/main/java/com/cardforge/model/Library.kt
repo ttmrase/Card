@@ -43,10 +43,16 @@ data class CardDef(
     val atk: Int = 0,
     val def: Int = 0,
     val flavor: String = "",
-    /** null または空 = 効果を持たないカード。 */
-    val effect: EffectText? = null
+    /** null または空 = 発動する効果を持たないカード。 */
+    val effect: EffectText? = null,
+    /** 【永続効果】発動せずに、表側でフィールドにある限り適用される効果。 */
+    val continuous: List<ContinuousEffect> = emptyList()
 ) {
     val hasEffect: Boolean get() = effect != null && !effect.isEmpty
+
+    val hasContinuous: Boolean get() = continuous.isNotEmpty()
+
+    val hasAnyEffect: Boolean get() = hasEffect || hasContinuous
 
     /** 通常召喚に必要なリリース数。レベル4以下は0、5〜6は1、7以上は2。 */
     val tributesRequired: Int

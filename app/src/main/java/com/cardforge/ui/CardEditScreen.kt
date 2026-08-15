@@ -242,6 +242,11 @@ fun CardEditScreen(
                 }
             }
 
+            ContinuousEffectSection(
+                effects = card.continuous,
+                master = master
+            ) { card = card.copy(continuous = it) }
+
             card.effect?.let { effect ->
                 EffectEditorSection(
                     kind = card.kind,
