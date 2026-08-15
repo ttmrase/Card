@@ -245,20 +245,63 @@ object DefaultData {
                 atk = 2000,
                 def = 2400,
                 flavor = "発動を必要とせず、表側で場にある限りずっと効いている。",
-                continuous = listOf(
-                    ProtectionEffect(
-                        scope = null,
-                        kind = ProtectionKind.OPPONENT_EFFECTS
-                    ),
-                    StatBuffEffect(
-                        scope = CardScope(
-                            who = PlayerRef.SELF,
-                            zone = ZoneType.MONSTER_ZONE,
-                            filters = listOf(RaceFilter(races[9].id)),
-                            selection = SelectionMode.ALL
+                effect = EffectText(
+                    clauses = listOf(
+                        EffectClause(
+                            mode = ActivationMode.CONTINUOUS,
+                            actions = listOf(
+                                GrantProtectionAction(
+                                    scope = CardScope(selfOnly = true),
+                                    kind = ProtectionKind.OPPONENT_EFFECTS
+                                )
+                            )
                         ),
-                        stat = StatKind.DEF,
-                        amount = 400
+                        EffectClause(
+                            mode = ActivationMode.CONTINUOUS,
+                            actions = listOf(
+                                ModifyStatAction(
+                                    scope = CardScope(
+                                        who = PlayerRef.SELF,
+                                        zone = ZoneType.MONSTER_ZONE,
+                                        filters = listOf(RaceFilter(races[9].id)),
+                                        selection = SelectionMode.ALL
+                                    ),
+                                    stat = StatKind.DEF,
+                                    delta = 400
+                                )
+                            )
+                        )
+                    )
+                )
+            ),
+
+            // --- 永続の効果でカテゴリ全体を強化する魔法 ---
+            CardDef(
+                id = newId(),
+                name = "アララギの旗印",
+                kind = CardKind.SPELL,
+                categoryIds = listOf(araragi),
+                effect = EffectText(
+                    afterActivation = AfterActivation.STAY_ON_FIELD,
+                    clauses = listOf(
+                        EffectClause(
+                            mode = ActivationMode.CONTINUOUS,
+                            actions = listOf(
+                                ModifyStatAction(
+                                    scope = CardScope(
+                                        who = PlayerRef.SELF,
+                                        zone = ZoneType.MONSTER_ZONE,
+                                        filters = listOf(
+                                            CategoryFilter(araragi),
+                                            KindFilter(CardKind.MONSTER)
+                                        ),
+                                        selection = SelectionMode.ALL
+                                    ),
+                                    stat = StatKind.ATK,
+                                    delta = 500
+                                )
+                            )
+                        )
                     )
                 )
             ),

@@ -100,6 +100,8 @@ class GameEngine(
         inst.positionChangedThisTurn = false
         inst.summonedOnTurn = -1
         inst.setOnTurn = -1
+        inst.turnProtections.clear()
+        inst.attackLockedThisTurn = false
     }
 
     fun applyPosition(inst: CardInstance, position: Position) {
@@ -171,32 +173,45 @@ class GameEngine(
     }
 
     // =======================================================================
-    // 永続効果
+    // 永続の効果（【発動タイプ】が「永続」の効果）
     // =======================================================================
 
     /**
-     * 永続効果を調べている最中かどうか。
-     * 適用範囲の絞り込みがまた永続効果を参照して堂々巡りになるのを防ぐ。
+     * 永続の効果を調べている最中かどうか。
+     * 適用範囲の絞り込みがまた永続の効果を参照して堂々巡りになるのを防ぐ。
      */
     private var resolvingContinuous = false
 
-    /** 表側でフィールドにあり、永続効果を持っているカード。 */
-    private fun continuousSources(): List<Pair<CardInstance, PlayerState>> =
-        state.players.flatMap { player ->
-            (player.monsters + player.spellsAndTraps)
-                .filter { !it.faceDown && it.card.hasContinuous }
-                .map { it to player }
+    /** いま適用されている永続の効果を、持ち主とセットで集める。 */
+    private fun activeContinuous(): List<Triple<CardInstance, PlayerState, EffectClause>> {
+        val result = mutableListOf<Triple<CardInstance, PlayerState, EffectClause>>()
+        for (player in state.players) {
+            val cards = player.monsters + player.spellsAndTraps + player.graveyard + player.hand
+            for (inst in cards) {
+                // 裏側のカードの効果は働かない。
+                if (isOnField(inst) && inst.faceDown) continue
+                val effect = inst.card.effect ?: continue
+                effect.clauses.forEachIndexed { index, clause ->
+                    if (!effect.isContinuous(index)) return@forEachIndexed
+                    if (!canActivateFrom(inst, effectiveLocations(effect, index))) return@forEachIndexed
+                    // 【条件】は常に見張る。イベント条件は永続では成立しない。
+                    if (!conditionsMet(effect.conditionsFor(index), player, inst)) return@forEachIndexed
+                    result += Triple(inst, player, clause)
+                }
+            }
         }
+        return result
+    }
 
-    /** [source] の永続効果が [target] に掛かっているか。 */
+    /** 永続の効果の [scope] に [target] が入っているか。 */
     private fun affects(
-        effect: ContinuousEffect,
+        scope: CardScope,
         source: CardInstance,
         owner: PlayerState,
         target: CardInstance
     ): Boolean {
-        val scope = effect.scope ?: return target === source
-        return candidates(scope, owner, respectProtection = false).any { it === target }
+        if (scope.selfOnly) return target === source
+        return candidates(scope, owner, source, respectProtection = false).any { it === target }
     }
 
     private fun <T> withoutRecursion(fallback: T, block: () -> T): T {
@@ -209,44 +224,48 @@ class GameEngine(
         }
     }
 
-    /** 永続効果による攻撃力・守備力の増減。 */
+    /** 永続の効果による攻撃力・守備力の増減。 */
     private fun statBonus(target: CardInstance, stat: StatKind): Int =
         withoutRecursion(0) {
-            continuousSources().sumOf { (source, owner) ->
-                source.card.continuous
-                    .filterIsInstance<StatBuffEffect>()
-                    .filter { it.stat == stat && affects(it, source, owner, target) }
-                    .sumOf { it.amount }
+            activeContinuous().sumOf { (source, owner, clause) ->
+                clause.actions
+                    .filterIsInstance<ModifyStatAction>()
+                    .filter { it.stat == stat && affects(it.scope, source, owner, target) }
+                    .sumOf { it.delta }
             }
         }
 
-    /** 永続効果込みの攻撃力。表示や戦闘の計算はこちらを使う。 */
+    /** 永続の効果込みの攻撃力。表示や戦闘の計算はこちらを使う。 */
     fun atkOf(inst: CardInstance): Int =
         (inst.atkValue + statBonus(inst, StatKind.ATK)).coerceAtLeast(0)
 
-    /** 永続効果込みの守備力。 */
+    /** 永続の効果込みの守備力。 */
     fun defOf(inst: CardInstance): Int =
         (inst.defValue + statBonus(inst, StatKind.DEF)).coerceAtLeast(0)
 
-    /** [target] が [kind] の耐性を持っているか。 */
-    fun hasProtection(target: CardInstance, kind: ProtectionKind): Boolean =
-        withoutRecursion(false) {
-            continuousSources().any { (source, owner) ->
-                source.card.continuous
-                    .filterIsInstance<ProtectionEffect>()
-                    .any { it.kind == kind && affects(it, source, owner, target) }
+    /** [target] が [kind] の耐性を持っているか。そのターンだけの耐性も含む。 */
+    fun hasProtection(target: CardInstance, kind: ProtectionKind): Boolean {
+        if (kind in target.turnProtections) return true
+        return withoutRecursion(false) {
+            activeContinuous().any { (source, owner, clause) ->
+                clause.actions
+                    .filterIsInstance<GrantProtectionAction>()
+                    .any { it.kind == kind && affects(it.scope, source, owner, target) }
             }
         }
+    }
 
-    /** 永続効果で攻撃を封じられているか。 */
-    fun isAttackLocked(target: CardInstance): Boolean =
-        withoutRecursion(false) {
-            continuousSources().any { (source, owner) ->
-                source.card.continuous
-                    .filterIsInstance<CannotAttackEffect>()
-                    .any { affects(it, source, owner, target) }
+    /** 攻撃を封じられているか。 */
+    fun isAttackLocked(target: CardInstance): Boolean {
+        if (target.attackLockedThisTurn) return true
+        return withoutRecursion(false) {
+            activeContinuous().any { (source, owner, clause) ->
+                clause.actions
+                    .filterIsInstance<PreventAttackAction>()
+                    .any { affects(it.scope, source, owner, target) }
             }
         }
+    }
 
     /** 「相手の効果を受けない」カードは、相手の効果の対象に選べない。 */
     private fun isUntouchableBy(target: CardInstance, actingPlayer: PlayerState): Boolean {
@@ -300,8 +319,12 @@ class GameEngine(
     fun candidates(
         scope: CardScope,
         controller: PlayerState,
+        source: CardInstance? = null,
         respectProtection: Boolean = true
     ): List<CardInstance> {
+        // 「このカード自身」を指しているときは、他の指定を見ない。
+        if (scope.selfOnly) return listOfNotNull(source)
+
         val hidesInfo = needsCardInfo(scope.filters)
         return playersFor(scope.who, controller)
             .flatMap { zoneCards(it, scope.zone) }
@@ -313,9 +336,11 @@ class GameEngine(
     private suspend fun resolveTargets(
         scope: CardScope,
         controller: PlayerState,
-        prompt: String
+        prompt: String,
+        source: CardInstance? = null
     ): List<CardInstance> {
-        val pool = candidates(scope, controller)
+        val pool = candidates(scope, controller, source)
+        if (scope.selfOnly) return pool
         if (pool.isEmpty()) return emptyList()
         return when (scope.selection) {
             SelectionMode.ALL -> pool
@@ -358,7 +383,7 @@ class GameEngine(
                     matchesEvent(condition, event, holder, controller)
 
                 is CardExistsCondition -> {
-                    val count = candidates(condition.scope, controller).size
+                    val count = candidates(condition.scope, controller, holder).size
                     if (condition.negate) count == 0 else count >= condition.atLeast
                 }
 
@@ -533,17 +558,21 @@ class GameEngine(
     // 効果（述語）の実行
     // =======================================================================
 
-    private suspend fun applyAction(action: Action, controller: PlayerState) {
+    private suspend fun applyAction(
+        action: Action,
+        controller: PlayerState,
+        source: CardInstance? = null
+    ) {
         if (state.finished) return
         when (action) {
             is DestroyAction -> {
-                val targets = resolveTargets(action.scope, controller, "破壊するカードを選択")
+                val targets = resolveTargets(action.scope, controller, "破壊するカードを選択", source)
                 targets.forEach { destroy(it) }
                 shuffleIfDeck(action.scope, controller)
             }
 
             is BanishAction -> {
-                val targets = resolveTargets(action.scope, controller, "除外するカードを選択")
+                val targets = resolveTargets(action.scope, controller, "除外するカードを選択", source)
                 targets.forEach {
                     val owner = locate(it)?.player?.index ?: controller.index
                     log("「${it.card.name}」を除外した。")
@@ -554,7 +583,7 @@ class GameEngine(
             }
 
             is ToHandAction -> {
-                val targets = resolveTargets(action.scope, controller, "手札に加えるカードを選択")
+                val targets = resolveTargets(action.scope, controller, "手札に加えるカードを選択", source)
                 targets.forEach {
                     log("「${it.card.name}」を手札に加えた。")
                     returnToHand(it)
@@ -563,7 +592,7 @@ class GameEngine(
             }
 
             is ToGraveAction -> {
-                val targets = resolveTargets(action.scope, controller, "墓地へ送るカードを選択")
+                val targets = resolveTargets(action.scope, controller, "墓地へ送るカードを選択", source)
                 targets.forEach {
                     val owner = locate(it)?.player?.index ?: controller.index
                     log("「${it.card.name}」を墓地へ送った。")
@@ -574,7 +603,7 @@ class GameEngine(
             }
 
             is ToDeckAction -> {
-                val targets = resolveTargets(action.scope, controller, "デッキに戻すカードを選択")
+                val targets = resolveTargets(action.scope, controller, "デッキに戻すカードを選択", source)
                 targets.forEach {
                     log("「${it.card.name}」をデッキに戻した。")
                     returnToDeck(it, action.toBottom)
@@ -584,7 +613,7 @@ class GameEngine(
 
             is SpecialSummonAction -> {
                 val destination = primaryPlayer(action.controller, controller)
-                val targets = resolveTargets(action.scope, controller, "特殊召喚するモンスターを選択")
+                val targets = resolveTargets(action.scope, controller, "特殊召喚するモンスターを選択", source)
                     .filter { it.card.kind == CardKind.MONSTER }
                 for (target in targets) {
                     val zone = destination.freeMonsterZones().firstOrNull()
@@ -607,7 +636,7 @@ class GameEngine(
             }
 
             is ModifyStatAction -> {
-                val targets = resolveTargets(action.scope, controller, "効果の対象を選択")
+                val targets = resolveTargets(action.scope, controller, "効果の対象を選択", source)
                 targets.forEach { target ->
                     when (action.stat) {
                         StatKind.ATK -> target.atkMod += action.delta
@@ -618,7 +647,7 @@ class GameEngine(
             }
 
             is ChangePositionAction -> {
-                val targets = resolveTargets(action.scope, controller, "表示形式を変えるカードを選択")
+                val targets = resolveTargets(action.scope, controller, "表示形式を変えるカードを選択", source)
                 targets.filter { it.card.kind == CardKind.MONSTER }.forEach {
                     applyPosition(it, action.position)
                     log("「${it.card.name}」を${action.position.label}にした。")
@@ -655,6 +684,23 @@ class GameEngine(
                         sendToGraveyard(player.deck.first())
                     }
                     log("${player.name}はデッキの上から${action.count}枚を墓地へ送った。")
+                }
+            }
+
+            is GrantProtectionAction -> {
+                // 発動して与えた耐性は、そのターンの間だけ続く。
+                val targets = resolveTargets(action.scope, controller, "耐性を与える対象を選択", source)
+                targets.forEach {
+                    if (action.kind !in it.turnProtections) it.turnProtections.add(action.kind)
+                    log("「${it.card.name}」はこのターン${action.kind.label}。")
+                }
+            }
+
+            is PreventAttackAction -> {
+                val targets = resolveTargets(action.scope, controller, "攻撃を封じる対象を選択", source)
+                targets.forEach {
+                    it.attackLockedThisTurn = true
+                    log("「${it.card.name}」はこのターン攻撃できない。")
                 }
             }
 
@@ -717,7 +763,8 @@ class GameEngine(
             val clause = effect.clauses[index]
             if (clause.actions.isEmpty()) return@filter false
 
-            // イベント条件を持つ効果は誘発効果なので、手動では発動できない。
+            // 永続の効果は発動しない。イベント条件を持つ効果は誘発効果なので手動発動できない。
+            if (effect.isContinuous(index)) return@filter false
             if (effect.isTriggered(index)) return@filter false
 
             if (!canActivateFrom(inst, effectiveLocations(effect, index))) return@filter false
@@ -968,7 +1015,7 @@ class GameEngine(
 
         for (action in clause.actions) {
             if (state.finished) break
-            applyAction(action, controller)
+            applyAction(action, controller, source = inst)
         }
 
         // 【発動後】の処理。省略時は魔法・罠なら墓地へ、モンスターならそのまま。
@@ -1080,6 +1127,7 @@ class GameEngine(
         val effect = inst.card.effect ?: return false
         val clause = effect.clauses.getOrNull(index) ?: return false
         if (clause.actions.isEmpty()) return false
+        if (effect.isContinuous(index)) return false
         if (!effect.isTriggered(index)) return false
         if (!canActivateFrom(inst, effectiveLocations(effect, index))) return false
 

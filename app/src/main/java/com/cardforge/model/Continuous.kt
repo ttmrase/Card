@@ -16,9 +16,9 @@ enum class ProtectionKind(val label: String) {
 }
 
 /**
- * 【永続効果】発動を必要とせず、表側でフィールドにある限りずっと適用される効果。
- *
- * [scope] が null のときは、この効果を持つカード自身に適用する。
+ * 旧データ互換。以前は永続効果を専用の欄で持っていた。
+ * 現在は効果の【発動タイプ】を「永続」にして、通常の効果と同じ枠組みで書く。
+ * 保存済みのカードを読み込むときに、この形から効果へ変換する。
  */
 @Serializable
 sealed interface ContinuousEffect {

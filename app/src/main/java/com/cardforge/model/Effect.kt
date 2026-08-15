@@ -57,7 +57,9 @@ data class CardScope(
     val zone: ZoneType = ZoneType.MONSTER_ZONE,
     val filters: List<CardFilter> = emptyList(),
     val count: Int = 1,
-    val selection: SelectionMode = SelectionMode.CHOOSE
+    val selection: SelectionMode = SelectionMode.CHOOSE,
+    /** この効果を持つカード自身だけを指す。true のとき他の指定は見ない。 */
+    val selfOnly: Boolean = false
 )
 
 // ---------------------------------------------------------------------------
@@ -131,6 +133,22 @@ data class DiscardAction(
 @Serializable
 @SerialName("mill")
 data class MillAction(val who: PlayerRef, val count: Int) : Action
+
+/**
+ * 耐性を与える。永続の効果に書けばその間ずっと、
+ * 発動する効果に書けばそのターンの間だけ適用される。
+ */
+@Serializable
+@SerialName("grantProtection")
+data class GrantProtectionAction(
+    val scope: CardScope,
+    val kind: ProtectionKind = ProtectionKind.OPPONENT_EFFECTS
+) : Action
+
+/** 攻撃できなくする。永続なら常時、発動ならそのターンの間。 */
+@Serializable
+@SerialName("preventAttack")
+data class PreventAttackAction(val scope: CardScope) : Action
 
 /** 相手が発動した効果を無効にし破壊する（罠カード向け）。 */
 @Serializable
@@ -326,7 +344,12 @@ data class EffectText(
         conditionsFor(index).filterIsInstance<EventCondition>()
 
     /** イベント条件を持つ効果は誘発効果、持たない効果は起動効果。 */
-    fun isTriggered(index: Int): Boolean = triggersFor(index).isNotEmpty()
+    fun isTriggered(index: Int): Boolean =
+        !isContinuous(index) && triggersFor(index).isNotEmpty()
+
+    /** 永続の効果は発動せず、【場所】にある限り適用される。 */
+    fun isContinuous(index: Int): Boolean =
+        clauses.getOrNull(index)?.mode?.isContinuous == true
 
     companion object {
         fun defaultAfterActivation(kind: CardKind): AfterActivation =

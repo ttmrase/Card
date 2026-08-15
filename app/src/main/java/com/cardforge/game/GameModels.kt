@@ -37,6 +37,12 @@ class CardInstance(
     var hasAttacked by mutableStateOf(false)
     var positionChangedThisTurn by mutableStateOf(false)
 
+    /** 発動する効果で与えられた、そのターンだけの耐性。 */
+    val turnProtections: SnapshotStateList<ProtectionKind> = mutableStateListOf()
+
+    /** 発動する効果で、そのターン攻撃を封じられているか。 */
+    var attackLockedThisTurn by mutableStateOf(false)
+
     val atkValue: Int get() = (card.atk + atkMod).coerceAtLeast(0)
     val defValue: Int get() = (card.def + defMod).coerceAtLeast(0)
 
@@ -50,6 +56,8 @@ class CardInstance(
     fun resetForNewTurn() {
         hasAttacked = false
         positionChangedThisTurn = false
+        turnProtections.clear()
+        attackLockedThisTurn = false
     }
 
     override fun toString(): String = "${card.name}#${uid.take(4)}"

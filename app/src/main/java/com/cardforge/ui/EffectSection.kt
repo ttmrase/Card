@@ -295,9 +295,12 @@ private fun ClauseEditor(
             itemLabel = { it.label }
         ) { onChange(clause.copy(mode = it)) }
         Text(
-            "【条件】に「〜した場合」を入れると、その出来事で発動する効果になります。" +
+            "「永続」を選ぶと発動せず、このカードが【場所】にある限りずっと適用されます。" +
+                "（例：このカードがフィールドに存在する限り、" +
+                "「アララギ」モンスターの攻撃力は500アップする）\n" +
+                "【条件】に「〜した場合」を入れると、その出来事で発動する効果になります。" +
                 "任意なら発動するか確認し、強制なら自動で発動します。" +
-                "「〜した場合」を入れない効果は、自分のメインフェイズに手動で発動します。",
+                "「〜した場合」も入れない効果は、自分のメインフェイズに手動で発動します。",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )

@@ -43,10 +43,12 @@ class LibraryRepository(private val context: Context) {
         private set
 
     fun load() {
-        library = runCatching {
+        val loaded = runCatching {
             if (file.exists()) json.decodeFromString<Library>(file.readText())
             else DefaultData.seed()
         }.getOrElse { DefaultData.seed() }
+
+        library = loaded.copy(cards = loaded.cards.map(LegacyMigration::migrate))
         // 初回起動時など、まだファイルが無ければ書き出しておく。
         if (!file.exists()) persist()
     }

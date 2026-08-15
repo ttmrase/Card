@@ -30,6 +30,8 @@ private enum class ActionType(val label: String, val usesScope: Boolean) {
     RECOVER("ライフを回復する", false),
     DISCARD("手札を捨てさせる", false),
     MILL("デッキから墓地へ送る", false),
+    GRANT_PROTECTION("耐性を与える（永続向き）", true),
+    PREVENT_ATTACK("攻撃できなくする（永続向き）", true),
     NEGATE("発動を無効にし破壊する", false)
 }
 
@@ -47,6 +49,8 @@ private fun typeOf(action: Action): ActionType = when (action) {
     is RecoverAction -> ActionType.RECOVER
     is DiscardAction -> ActionType.DISCARD
     is MillAction -> ActionType.MILL
+    is GrantProtectionAction -> ActionType.GRANT_PROTECTION
+    is PreventAttackAction -> ActionType.PREVENT_ATTACK
     NegateAction -> ActionType.NEGATE
 }
 
@@ -59,6 +63,8 @@ private fun scopeOf(action: Action): CardScope? = when (action) {
     is SpecialSummonAction -> action.scope
     is ModifyStatAction -> action.scope
     is ChangePositionAction -> action.scope
+    is GrantProtectionAction -> action.scope
+    is PreventAttackAction -> action.scope
     else -> null
 }
 
@@ -124,6 +130,9 @@ fun ActionDialog(
     var randomDiscard by remember {
         mutableStateOf((initial as? DiscardAction)?.random ?: false)
     }
+    var protection by remember {
+        mutableStateOf((initial as? GrantProtectionAction)?.kind ?: ProtectionKind.OPPONENT_EFFECTS)
+    }
 
     fun build(): Action = when (type) {
         ActionType.DESTROY -> DestroyAction(scope)
@@ -139,6 +148,8 @@ fun ActionDialog(
         ActionType.RECOVER -> RecoverAction(who, amount)
         ActionType.DISCARD -> DiscardAction(who, amount, randomDiscard)
         ActionType.MILL -> MillAction(who, amount)
+        ActionType.GRANT_PROTECTION -> GrantProtectionAction(scope, protection)
+        ActionType.PREVENT_ATTACK -> PreventAttackAction(scope)
         ActionType.NEGATE -> NegateAction
     }
 
@@ -210,6 +221,25 @@ fun ActionDialog(
                             Text("ランダムに捨てさせる")
                         }
                     }
+
+                    ActionType.GRANT_PROTECTION -> {
+                        Dropdown("与える耐性", ProtectionKind.all, protection, { it.label }) {
+                            protection = it
+                        }
+                        Text(
+                            "【発動タイプ】を「永続」にすると常に適用され、" +
+                                "発動する効果に書くとそのターンの間だけ適用されます。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    ActionType.PREVENT_ATTACK -> Text(
+                        "【発動タイプ】を「永続」にすると常に適用され、" +
+                            "発動する効果に書くとそのターンの間だけ適用されます。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
 
                     ActionType.NEGATE -> Text(
                         "相手が発動したカードや、召喚・攻撃宣言に対して発動すると、" +

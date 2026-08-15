@@ -172,11 +172,18 @@ enum class GameEventType(val label: String, val isPlayerEvent: Boolean = false) 
     }
 }
 
-/** 発動が任意か強制か。 */
+/**
+ * その効果をどう扱うか。
+ *
+ * [CONTINUOUS] は発動を必要とせず、【場所】にある間ずっと適用される永続効果になる。
+ */
 @Serializable
 enum class ActivationMode(val label: String, val suffix: String) {
     OPTIONAL("発動できる（任意）", "できる"),
-    MANDATORY("発動する（強制）", "する");
+    MANDATORY("発動する（強制）", "する"),
+    CONTINUOUS("永続（発動せず、その場所にある限り適用）", "する");
+
+    val isContinuous: Boolean get() = this == CONTINUOUS
 
     companion object {
         val all: List<ActivationMode> get() = entries

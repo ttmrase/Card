@@ -151,6 +151,25 @@ fun CardScopeEditor(
     var showFilterDialog by remember { mutableStateOf(false) }
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Checkbox(
+                checked = scope.selfOnly,
+                onCheckedChange = { onChange(scope.copy(selfOnly = it)) }
+            )
+            Text("この効果を持つカード自身を対象にする")
+        }
+
+        if (scope.selfOnly) {
+            Surface(color = Surface2, shape = MaterialTheme.shapes.small) {
+                Text(
+                    EffectTextRenderer.scopeToText(scope, master),
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(8.dp)
+                )
+            }
+            return@Column
+        }
+
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Dropdown(
                 "誰の", PlayerRef.all, scope.who, { it.label }, Modifier.weight(1f)

@@ -33,16 +33,23 @@ class ContinuousEffectTest {
         return state to GameEngine(state, Auto())
     }
 
+    /** 永続の効果は、【発動タイプ】を「永続」にした効果として書く。 */
+    private fun continuous(vararg actions: Action) = EffectText(
+        clauses = listOf(
+            EffectClause(mode = ActivationMode.CONTINUOUS, actions = actions.toList())
+        )
+    )
+
     private fun monster(
         name: String,
         atk: Int = 1000,
         def: Int = 1000,
-        continuous: List<ContinuousEffect> = emptyList()
+        effect: EffectText? = null
     ) = CardInstance(
         newId(),
         CardDef(
             id = newId(), name = name, kind = CardKind.MONSTER,
-            level = 4, atk = atk, def = def, continuous = continuous
+            level = 4, atk = atk, def = def, effect = effect
         )
     )
 
@@ -53,15 +60,15 @@ class ContinuousEffectTest {
 
         val lord = monster(
             "指揮官", atk = 1000,
-            continuous = listOf(
-                StatBuffEffect(
+            effect = continuous(
+                ModifyStatAction(
                     scope = CardScope(
                         who = PlayerRef.SELF,
                         zone = ZoneType.MONSTER_ZONE,
                         selection = SelectionMode.ALL
                     ),
                     stat = StatKind.ATK,
-                    amount = 500
+                    delta = 500
                 )
             )
         )
@@ -84,7 +91,9 @@ class ContinuousEffectTest {
         val me = state.players[0]
         val lord = monster(
             "伏せた指揮官",
-            continuous = listOf(StatBuffEffect(scope = null, stat = StatKind.ATK, amount = 500))
+            effect = continuous(
+                ModifyStatAction(CardScope(selfOnly = true), StatKind.ATK, 500)
+            )
         )
         lord.faceDown = true
         me.monsterZones[0] = lord
@@ -102,7 +111,9 @@ class ContinuousEffectTest {
 
         val warded = monster(
             "守られた者",
-            continuous = listOf(ProtectionEffect(scope = null, kind = ProtectionKind.OPPONENT_EFFECTS))
+            effect = continuous(
+                GrantProtectionAction(CardScope(selfOnly = true), ProtectionKind.OPPONENT_EFFECTS)
+            )
         )
         val plain = monster("普通の者")
         me.monsterZones[0] = warded
@@ -134,8 +145,8 @@ class ContinuousEffectTest {
         me.monsterZones[0] = attacker
         val tough = monster(
             "不滅の壁", atk = 1000,
-            continuous = listOf(
-                ProtectionEffect(scope = null, kind = ProtectionKind.BATTLE_DESTRUCTION)
+            effect = continuous(
+                GrantProtectionAction(CardScope(selfOnly = true), ProtectionKind.BATTLE_DESTRUCTION)
             )
         )
         opponent.monsterZones[0] = tough
@@ -154,7 +165,7 @@ class ContinuousEffectTest {
 
         val locked = monster(
             "縛られた者",
-            continuous = listOf(CannotAttackEffect(scope = null))
+            effect = continuous(PreventAttackAction(CardScope(selfOnly = true)))
         )
         me.monsterZones[0] = locked
         assertFalse(engine.canAttack(locked))
@@ -165,34 +176,113 @@ class ContinuousEffectTest {
     }
 
     @Test
-    fun `continuous effects are written above the activated ones`() {
-        val master = MasterData()
+    fun `a continuous clause reads as lasting while the card is there`() {
+        val master = MasterData(categories = listOf(NamedEntry("cat-1", "アララギ")))
         val card = CardDef(
-            id = "x", name = "永続持ち", kind = CardKind.MONSTER,
-            level = 4, atk = 1000, def = 1000,
-            continuous = listOf(
-                ProtectionEffect(scope = null, kind = ProtectionKind.OPPONENT_EFFECTS)
-            ),
+            id = "x", name = "旗印", kind = CardKind.SPELL,
             effect = EffectText(
                 clauses = listOf(
-                    EffectClause(actions = listOf(DrawAction(PlayerRef.SELF, 1)))
+                    EffectClause(
+                        mode = ActivationMode.CONTINUOUS,
+                        actions = listOf(
+                            ModifyStatAction(
+                                scope = CardScope(
+                                    who = PlayerRef.SELF,
+                                    zone = ZoneType.MONSTER_ZONE,
+                                    filters = listOf(
+                                        CategoryFilter("cat-1"),
+                                        KindFilter(CardKind.MONSTER)
+                                    ),
+                                    selection = SelectionMode.ALL
+                                ),
+                                stat = StatKind.ATK,
+                                delta = 500
+                            )
+                        )
+                    )
                 )
             )
         )
         val lines = EffectTextRenderer.render(card, master).lines()
-        assertEquals("【永続効果】このカードは相手の効果を受けない。", lines[0])
-        assertTrue(lines[1].startsWith("①："))
+        assertEquals(
+            "①：このカードがフィールドに存在する限り、" +
+                "自分モンスターゾーンの全ての「アララギ」モンスターの攻撃力は500アップする。",
+            lines.last()
+        )
+        assertTrue(card.hasContinuous)
     }
 
     @Test
-    fun `a card with only a continuous effect still renders text`() {
-        val master = MasterData()
-        val card = CardDef(
-            id = "x", name = "永続だけ", kind = CardKind.MONSTER,
-            continuous = listOf(CannotAttackEffect(scope = null))
+    fun `a continuous clause is never activated by hand or by an event`() {
+        val (state, engine) = game()
+        val me = state.players[0]
+        val card = monster(
+            "永続持ち",
+            effect = continuous(
+                GrantProtectionAction(CardScope(selfOnly = true), ProtectionKind.OPPONENT_EFFECTS)
+            )
         )
-        assertEquals("【永続効果】このカードは攻撃できない。", EffectTextRenderer.render(card, master))
-        assertTrue(card.hasAnyEffect)
-        assertFalse(card.hasEffect)
+        me.monsterZones[0] = card
+        assertTrue(engine.activatableClauses(card, me).isEmpty())
+        assertFalse(engine.activatableCards(me).any { it === card })
+    }
+
+    @Test
+    fun `granting protection from an activated effect lasts only for the turn`() = runBlocking {
+        val (state, engine) = game()
+        val me = state.players[0]
+        val guard = monster("守り手")
+        me.monsterZones[0] = guard
+
+        val spell = CardInstance(
+            newId(),
+            CardDef(
+                id = newId(), name = "一時の加護", kind = CardKind.SPELL,
+                effect = EffectText(
+                    clauses = listOf(
+                        EffectClause(
+                            actions = listOf(
+                                GrantProtectionAction(
+                                    CardScope(
+                                        who = PlayerRef.SELF,
+                                        zone = ZoneType.MONSTER_ZONE,
+                                        selection = SelectionMode.ALL
+                                    ),
+                                    ProtectionKind.BATTLE_DESTRUCTION
+                                )
+                            )
+                        )
+                    )
+                )
+            )
+        )
+        me.hand.add(spell)
+
+        assertFalse(engine.hasProtection(guard, ProtectionKind.BATTLE_DESTRUCTION))
+        engine.activateCard(spell, me)
+        assertTrue(engine.hasProtection(guard, ProtectionKind.BATTLE_DESTRUCTION))
+
+        // 次のターンには切れている。
+        guard.resetForNewTurn()
+        assertFalse(engine.hasProtection(guard, ProtectionKind.BATTLE_DESTRUCTION))
+    }
+
+    @Test
+    fun `old saved cards keep working through the migration`() {
+        val legacy = CardDef(
+            id = "x", name = "旧データ", kind = CardKind.MONSTER,
+            level = 4, atk = 1000, def = 1000,
+            continuous = listOf(
+                ProtectionEffect(scope = null, kind = ProtectionKind.OPPONENT_EFFECTS)
+            )
+        )
+        val migrated = com.cardforge.data.LegacyMigration.migrate(legacy)
+
+        assertTrue(migrated.continuous.isEmpty())
+        val clause = migrated.effect!!.clauses.single()
+        assertEquals(ActivationMode.CONTINUOUS, clause.mode)
+        val action = clause.actions.single() as GrantProtectionAction
+        assertEquals(ProtectionKind.OPPONENT_EFFECTS, action.kind)
+        assertTrue("旧データの対象はこのカード自身", action.scope.selfOnly)
     }
 }

@@ -79,6 +79,7 @@ object EffectTextRenderer {
 
     /** 「相手フィールドの闇属性モンスター1体」のような、数まで含めた対象表現。 */
     fun scopeToText(scope: CardScope, master: MasterData, withCount: Boolean = true): String {
+        if (scope.selfOnly) return "このカード"
         val prefix = zonePrefix(scope.who, scope.zone)
         val noun = filtersToNoun(scope.filters, master, scope.zone)
         return when {
@@ -141,6 +142,12 @@ object EffectTextRenderer {
 
         is MillAction ->
             "${action.who.label}のデッキの上からカードを${action.count}枚墓地へ送る"
+
+        is GrantProtectionAction ->
+            scopeToText(action.scope, master, withCount = false) + "は" + action.kind.label
+
+        is PreventAttackAction ->
+            scopeToText(action.scope, master, withCount = false) + "は攻撃できない"
 
         NegateAction -> "相手の効果の発動を無効にし、そのカードを破壊する"
     }
@@ -239,12 +246,8 @@ object EffectTextRenderer {
     /** カードの効果テキスト全体を組み立てる。効果を持たない場合は空文字。 */
     fun render(card: CardDef, master: MasterData): String {
         val lines = mutableListOf<String>()
-
-        // 永続効果は発動を必要としないので、先に書く。
-        card.continuous.forEach { lines += "【永続効果】" + continuousToText(it, master) + "。" }
-
-        val effect = card.effect
-        if (effect == null || effect.isEmpty) return lines.joinToString("\n")
+        val effect = card.effect ?: return ""
+        if (effect.isEmpty) return ""
 
         // 効果番号より前の共通指定。
         if (effect.locations.isNotEmpty()) {
@@ -295,17 +298,28 @@ object EffectTextRenderer {
             }
             // 効果番号ごとの【発動後】は、明示されていれば常に書く。
             clause.afterActivation?.let { sb.append("【発動後】" + it.label + " ") }
-            sb.append(
-                clause.actions.mapIndexed { position, action ->
-                    val text = actionToText(action, master)
-                    // 最後の文だけ「〜できる（任意）／〜する（強制）」を書き分ける。
-                    if (position == clause.actions.lastIndex && effect.isTriggered(index)) {
-                        applyMode(text, clause.mode)
-                    } else {
-                        text
+            if (effect.isContinuous(index)) {
+                // 「このカードがフィールドに存在する限り、〜」という書き出しにする。
+                val where = effectiveLocationLabel(effect, index)
+                sb.append("このカードが${where}に存在する限り、")
+                sb.append(
+                    clause.actions.joinToString("。また、") {
+                        continuousActionToText(it, master)
                     }
-                }.joinToString("。その後、")
-            )
+                )
+            } else {
+                sb.append(
+                    clause.actions.mapIndexed { position, action ->
+                        val text = actionToText(action, master)
+                        // 最後の文だけ「〜できる（任意）／〜する（強制）」を書き分ける。
+                        if (position == clause.actions.lastIndex && effect.isTriggered(index)) {
+                            applyMode(text, clause.mode)
+                        } else {
+                            text
+                        }
+                    }.joinToString("。その後、")
+                )
+            }
             sb.append("。")
             effect.clauseLimitsFor(index).forEach { limit ->
                 sb.append(limitToText(limit, master, cardWide = false) + "。")
@@ -314,6 +328,43 @@ object EffectTextRenderer {
         }
 
         return lines.joinToString("\n")
+    }
+
+    /** 永続の効果が有効になる場所。省略時はフィールド。 */
+    private fun effectiveLocationLabel(effect: EffectText, index: Int): String {
+        val locations = effect.locationsFor(index)
+        return if (locations.isEmpty()) ActivationLocation.FIELD.label
+        else locations.joinToString("・") { it.label }
+    }
+
+    /**
+     * 永続の効果は「〜する」ではなく状態を述べる文にする。
+     * 「このカード自身」が対象のときは、書き出しと重ならないよう主語を省く。
+     */
+    fun continuousActionToText(action: Action, master: MasterData): String {
+        fun subject(scope: CardScope): String =
+            if (scope.selfOnly) "" else scopeToText(scope, master, withCount = false)
+
+        return when (action) {
+            is ModifyStatAction -> {
+                val verb = if (action.delta >= 0) "アップする" else "ダウンする"
+                val who = subject(action.scope)
+                val head = if (who.isEmpty()) "その" else "${who}の"
+                "$head${action.stat.label}は${kotlin.math.abs(action.delta)}$verb"
+            }
+
+            is GrantProtectionAction -> {
+                val who = subject(action.scope)
+                if (who.isEmpty()) action.kind.label else "${who}は${action.kind.label}"
+            }
+
+            is PreventAttackAction -> {
+                val who = subject(action.scope)
+                if (who.isEmpty()) "攻撃できない" else "${who}は攻撃できない"
+            }
+
+            else -> actionToText(action, master)
+        }
     }
 
     /** イベント条件を先に読ませる。 */

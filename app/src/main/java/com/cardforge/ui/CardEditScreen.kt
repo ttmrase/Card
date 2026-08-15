@@ -234,18 +234,14 @@ fun CardEditScreen(
                 if (card.effect == null) {
                     Text(
                         if (card.kind == CardKind.MONSTER)
-                            "チェックを外したままにすると、効果を持たない通常モンスターになります。"
+                            "チェックを外したままにすると、効果を持たない通常モンスターになります。" +
+                                "永続効果も、ここにチェックを入れてから【発動タイプ】を「永続」にして作ります。"
                         else "魔法・罠カードは効果が必要です。チェックを入れてください。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
-
-            ContinuousEffectSection(
-                effects = card.continuous,
-                master = master
-            ) { card = card.copy(continuous = it) }
 
             card.effect?.let { effect ->
                 EffectEditorSection(
