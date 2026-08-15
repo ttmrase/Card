@@ -84,7 +84,8 @@ class DuelController(
             ui
         }
         engineRef = GameEngine(state, interaction)
-        aiController = aiIndex?.let { AiController(engineRef, it) }
+        // 1手ごとに少し間を置いて、相手の動きを追えるようにする。
+        aiController = aiIndex?.let { AiController(engineRef, it, AI_PAUSE_MILLIS) }
     }
 
     // -- プロンプトの解決 ---------------------------------------------------
@@ -115,6 +116,11 @@ class DuelController(
         } finally {
             aiThinking = false
         }
+    }
+
+    private companion object {
+        /** AI の1手ごとの間（ミリ秒）。 */
+        const val AI_PAUSE_MILLIS = 700L
     }
 
     private inner class UiInteraction : Interaction {

@@ -141,7 +141,7 @@ class CardTextTest {
         )
         val text = EffectTextRenderer.render(card, master)
         assertEquals(
-            "①：【条件】このカードが破壊された場合 相手に800ポイントのダメージを与える。",
+            "①：【条件】このカードが破壊された場合 ⇒ 相手に800ポイントのダメージを与える。",
             text
         )
         // モンスターの既定の【発動後】は「そのまま残す」なので書かれない。

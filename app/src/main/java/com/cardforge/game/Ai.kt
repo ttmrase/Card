@@ -3,6 +3,7 @@ package com.cardforge.game
 import com.cardforge.model.CardKind
 import com.cardforge.model.Phase
 import com.cardforge.model.Position
+import kotlinx.coroutines.delay
 
 /** [inst] を持っているプレイヤーの番号。どこにも無ければ null。 */
 fun GameState.ownerIndexOf(inst: CardInstance): Int? {
@@ -70,17 +71,27 @@ class AiInteraction(
  */
 class AiController(
     private val engine: GameEngine,
-    private val aiIndex: Int
+    private val aiIndex: Int,
+    /**
+     * 1手ごとの間。0 だとテストが速く回り、実機では相手の動きを追える。
+     */
+    private val pauseMillis: Long = 0L
 ) {
 
     private val state get() = engine.state
     private val me get() = state.players[aiIndex]
+
+    /** 相手の行動が見えるように、1手ごとに少し待つ。 */
+    private suspend fun pause() {
+        if (pauseMillis > 0 && !state.finished) delay(pauseMillis)
+    }
 
     suspend fun playTurn() {
         if (state.finished || state.turnPlayerIndex != aiIndex) return
 
         // メインフェイズ1。
         if (state.phase == Phase.DRAW) engine.advancePhase()
+        pause()
         playMainPhase()
         if (state.finished) return
 
@@ -89,6 +100,7 @@ class AiController(
             while (state.phase != Phase.BATTLE && !state.finished) {
                 if (state.phase == Phase.MAIN2 || state.phase == Phase.END) break
                 engine.advancePhase()
+                pause()
             }
             if (state.phase == Phase.BATTLE) playBattlePhase()
         }
@@ -97,6 +109,7 @@ class AiController(
         // 残りの伏せカードを置いてターンを終える。
         if (state.phase == Phase.BATTLE) engine.advancePhase()
         setSpellsAndTraps()
+        pause()
         if (!state.finished) engine.endTurnImmediately()
     }
 
@@ -109,10 +122,12 @@ class AiController(
                 .sortedByDescending { it.card.kind == CardKind.SPELL }
             val next = playable.firstOrNull() ?: return@repeat
             engine.activateCard(next, me)
+            pause()
         }
         if (state.finished) return
 
         summonBestMonster()
+        pause()
     }
 
     private suspend fun summonBestMonster() {
@@ -146,6 +161,7 @@ class AiController(
             val defenders = engine.attackTargets()
             if (defenders.isEmpty()) {
                 engine.declareAttack(attacker, null)
+                pause()
                 continue
             }
 
@@ -156,6 +172,7 @@ class AiController(
                 continue
             }
             engine.declareAttack(attacker, target)
+            pause()
         }
     }
 

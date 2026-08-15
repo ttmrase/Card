@@ -22,6 +22,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.cardforge.data.LibraryRepository
 import com.cardforge.game.CardInstance
+import com.cardforge.game.GameEngine
 import com.cardforge.game.PlayerState
 import com.cardforge.game.ownerIndexOf
 import com.cardforge.model.CardKind
@@ -103,6 +104,7 @@ fun DuelScreen(
                 zones = top.monsterZones,
                 ownerIndex = top.index,
                 bottomIndex = bottomIndex,
+                engine = engine,
                 highlight = attacker != null,
                 onClick = { card ->
                     val current = attacker
@@ -137,6 +139,7 @@ fun DuelScreen(
                 zones = bottom.monsterZones,
                 ownerIndex = bottom.index,
                 bottomIndex = bottomIndex,
+                engine = engine,
                 onClick = { if (interactive) selected = it else detail = it },
                 onLongClick = { detail = it }
             )
@@ -349,6 +352,8 @@ private fun ZoneRow(
     zones: List<CardInstance?>,
     ownerIndex: Int,
     bottomIndex: Int,
+    /** 永続効果込みの攻守を出すためのエンジン。null なら素の値を出す。 */
+    engine: GameEngine? = null,
     highlight: Boolean = false,
     onClick: (CardInstance) -> Unit,
     onLongClick: (CardInstance) -> Unit
@@ -366,6 +371,8 @@ private fun ZoneRow(
                         inst = card,
                         revealed = !card.faceDown || ownerIndex == bottomIndex,
                         highlight = highlight,
+                        atk = engine?.atkOf(card),
+                        def = engine?.defOf(card),
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(74.dp),
@@ -440,13 +447,15 @@ private fun FieldCard(
                     .padding(horizontal = 2.dp)
             )
             if (inst.card.kind == CardKind.MONSTER) {
-                Text(
-                    "${atk ?: inst.atkValue}/${def ?: inst.defValue}",
-                    fontSize = 8.sp,
-                    color = Gold,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth()
-                )
+                // 効果で上下している値は色を変えて、変化が見て分かるようにする。
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    StatValue(atk ?: inst.atkValue, inst.card.atk)
+                    Text("/", fontSize = 8.sp, color = Gold)
+                    StatValue(def ?: inst.defValue, inst.card.def)
+                }
             }
         }
 
@@ -596,6 +605,14 @@ private fun CardActionDialog(
                         onDismiss()
                         scope.launch { engine.normalSummon(inst, player, asSet = true) }
                     }
+                    // 【場所】に手札を指定した効果（手札誘発や自己特殊召喚）は
+                    // 召喚せずにここから発動する。
+                    if (inst.card.hasEffect) {
+                        ActionButton("効果を発動する", enabled = canActivate) {
+                            onDismiss()
+                            scope.launch { engine.activateCard(inst, player) }
+                        }
+                    }
                 }
 
                 if (inHand && inst.card.kind != CardKind.MONSTER) {
@@ -636,6 +653,21 @@ private fun CardActionDialog(
             }
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text("閉じる") } }
+    )
+}
+
+/** 攻守の1つぶん。素の値から動いていれば、上昇は緑・低下は赤で示す。 */
+@Composable
+private fun StatValue(current: Int, base: Int) {
+    Text(
+        current.toString(),
+        fontSize = 8.sp,
+        fontWeight = if (current == base) FontWeight.Normal else FontWeight.Bold,
+        color = when {
+            current > base -> Boost
+            current < base -> Danger
+            else -> Gold
+        }
     )
 }
 

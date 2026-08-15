@@ -288,10 +288,14 @@ fun CardPreviewDialog(
                     )
                 }
                 val text = EffectTextRenderer.render(card, master)
-                Text(
-                    text.ifBlank { card.flavor.ifBlank { "効果を持たないカード。" } },
-                    style = MaterialTheme.typography.bodySmall
-                )
+                if (text.isBlank()) {
+                    Text(
+                        card.flavor.ifBlank { "効果を持たないカード。" },
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                } else {
+                    EffectTextView(text)
+                }
                 if (text.isNotBlank() && card.flavor.isNotBlank()) {
                     Text(
                         card.flavor,

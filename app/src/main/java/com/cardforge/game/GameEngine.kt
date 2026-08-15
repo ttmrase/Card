@@ -58,6 +58,12 @@ class GameEngine(
     private val MAX_TRIGGER_DEPTH = 4
     private var responseDepth = 0
 
+    /**
+     * 応答（相手の行動に割り込む）の窓を開いている最中かどうか。
+     * この間は「自分のターンのメインフェイズだけ」という制限を緩める。
+     */
+    private var respondWindow = 0
+
     private fun log(message: String) = state.addLog(message)
 
     // =======================================================================
@@ -1106,12 +1112,31 @@ class GameEngine(
         val phases = effect.phasesFor(index)
         if (phases.isNotEmpty()) {
             if (state.phase !in phases) return false
+            if (respondsInWindow(inst, effect, index)) return true
             // 魔法とモンスターの効果は、フェイズを指定しても自分のターンのまま。
             if (inst.card.kind != CardKind.TRAP && state.turnPlayer !== controller) return false
             return true
         }
         if (inst.card.kind == CardKind.TRAP) return true
+        if (respondsInWindow(inst, effect, index)) return true
         return state.phase.isMain && state.turnPlayer === controller
+    }
+
+    /**
+     * 応答の窓で、いま割り込めるか。
+     *
+     * 罠に加えて、【場所】にフィールド以外（手札・墓地・除外ゾーン）を書いた効果を
+     * 相手のターンでも使えるようにする。いわゆる手札誘発がこれにあたる。
+     * フィールドのカードの起動効果は、これまでどおり自分のターンのみ。
+     */
+    private fun respondsInWindow(
+        inst: CardInstance,
+        effect: EffectText,
+        index: Int
+    ): Boolean {
+        if (respondWindow <= 0) return false
+        if (inst.card.kind == CardKind.TRAP) return true
+        return effectiveLocations(effect, index).any { it != ActivationLocation.FIELD }
     }
 
     // -----------------------------------------------------------------------
@@ -1233,7 +1258,8 @@ class GameEngine(
                 !limitsAllow(inst, index, controller) ->
                     "【制限】により、このターンはもう発動できない。"
 
-                !conditionsMet(effect.conditionsFor(index), controller) ->
+                // holder を渡さないと「このカードが〜」の条件が常に不成立になる。
+                !conditionsMet(effect.conditionsFor(index), controller, inst) ->
                     "【条件】を満たしていない。"
 
                 !canPayCosts(effect.costsFor(index), controller, excluding = inst) ->
@@ -1558,26 +1584,52 @@ class GameEngine(
     private suspend fun offerResponse(activator: PlayerState, description: String): Boolean {
         if (responseDepth > 0 || state.finished) return false
         val responder = state.opponentOf(activator)
-        val traps = responder.spellsAndTraps.filter { canActivateTrap(it, responder) }
-        if (traps.isEmpty()) return false
+        val cards = respondableCards(responder)
+        if (cards.isEmpty()) return false
 
         val chosen = interaction.chooseCards(
             responder.index,
-            "$description に対して罠カードを発動しますか？（発動しない場合はそのまま決定）",
-            traps, 0, 1
+            "$description に対してカードを発動しますか？（発動しない場合はそのまま決定）",
+            cards, 0, 1
         )
-        val trap = chosen.firstOrNull() ?: return false
+        val card = chosen.firstOrNull() ?: return false
 
-        val negates = trap.card.effect?.clauses.orEmpty()
+        val negates = card.card.effect?.clauses.orEmpty()
             .any { clause -> clause.actions.any { it is NegateAction } }
 
         responseDepth++
         try {
-            activateCard(trap, responder)
+            activateCard(card, responder)
         } finally {
             responseDepth--
         }
         return negates
+    }
+
+    /**
+     * 相手の行動に割り込んで発動できるカードの一覧。
+     *
+     * セットしてある罠と、【場所】にフィールド以外を書いた効果
+     * （手札誘発や、墓地・除外ゾーンから発動する効果）が対象になる。
+     */
+    fun respondableCards(responder: PlayerState): List<CardInstance> {
+        respondWindow++
+        try {
+            val pool = responder.spellsAndTraps + responder.hand +
+                responder.monsters + responder.graveyard + responder.banished
+
+            return pool.filter { inst ->
+                // 裏側のカードは、セットした次のターン以降の罠だけが応答できる。
+                if (isOnField(inst) && inst.faceDown) {
+                    if (inst.card.kind != CardKind.TRAP) return@filter false
+                    if (inst.setOnTurn !in 0 until state.turn) return@filter false
+                }
+                activatableClauses(inst, responder).isNotEmpty() ||
+                    canActivateCardItself(inst, responder)
+            }
+        } finally {
+            respondWindow--
+        }
     }
 
     // =======================================================================

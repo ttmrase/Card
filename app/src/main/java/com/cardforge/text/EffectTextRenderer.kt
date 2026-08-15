@@ -13,6 +13,12 @@ object EffectTextRenderer {
 
     private val CIRCLED = listOf("①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩")
 
+    /** 【…】の欄どうしの区切り。 */
+    const val SECTION_SEPARATOR = " ／ "
+
+    /** 【…】の欄と、効果そのものの区切り。 */
+    const val EFFECT_ARROW = " ⇒ "
+
     fun circledNumber(index: Int): String = CIRCLED.getOrElse(index) { "(${index + 1})" }
 
     // -----------------------------------------------------------------------
@@ -344,24 +350,26 @@ object EffectTextRenderer {
             if (!clause.hasWork) return@forEachIndexed
             val sb = StringBuilder(circledNumber(index) + "：")
 
+            // 効果そのものの前に置く【…】の欄。区切りを入れて、効果本体と分ける。
+            val prefixes = mutableListOf<String>()
             if (clause.locations.isNotEmpty()) {
-                sb.append("【場所】" + clause.locations.joinToString("、") { it.label } + " ")
+                prefixes += "【場所】" + clause.locations.joinToString("、") { it.label }
             }
             val clauseConditions = orderedConditions(effect.conditionsFor(index) - effect.conditions)
             if (clauseConditions.isNotEmpty()) {
-                sb.append(
-                    "【条件】" + clauseConditions.joinToString("、かつ") {
-                        conditionToText(it, master)
-                    } + " "
-                )
+                prefixes += "【条件】" + clauseConditions.joinToString("、かつ") {
+                    conditionToText(it, master)
+                }
             }
             if (clause.costs.isNotEmpty()) {
-                sb.append(
-                    "【コスト】" + clause.costs.joinToString("、") { costToText(it, master) } + " "
-                )
+                prefixes += "【コスト】" + clause.costs.joinToString("、") { costToText(it, master) }
             }
             // 効果番号ごとの【発動後】は、明示されていれば常に書く。
-            clause.afterActivation?.let { sb.append("【発動後】" + it.label + " ") }
+            clause.afterActivation?.let { prefixes += "【発動後】" + it.label }
+            if (prefixes.isNotEmpty()) {
+                sb.append(prefixes.joinToString(SECTION_SEPARATOR)).append(EFFECT_ARROW)
+            }
+
             if (effect.isOnActivation(index)) {
                 sb.append("このカードの発動時に、")
                 sb.append(

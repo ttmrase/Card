@@ -345,7 +345,7 @@ fun CardEditScreen(
                                 style = MaterialTheme.typography.bodySmall
                             )
                         } else {
-                            Text(text, style = MaterialTheme.typography.bodySmall)
+                            EffectTextView(text)
                         }
                     }
                 }

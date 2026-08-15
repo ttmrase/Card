@@ -12,6 +12,9 @@ val Accent = Color(0xFF9B87F5)
 val Gold = Color(0xFFC9A227)
 val Danger = Color(0xFFE05C5C)
 
+/** 効果による上昇（攻撃力アップなど）を示す色。 */
+val Boost = Color(0xFF5BD6A0)
+
 val MonsterColor = Color(0xFFB08A4A)
 val SpellColor = Color(0xFF1F8A70)
 val TrapColor = Color(0xFF9B3B7A)
