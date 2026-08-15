@@ -342,7 +342,8 @@ object DefaultData {
                             conditions = listOf(
                                 EventCondition(
                                     event = GameEventType.LEFT_FIELD,
-                                    selfOnly = true
+                                    selfOnly = true,
+                                    cause = CauseFilter.BY_OPPONENT_EFFECT
                                 )
                             ),
                             mode = ActivationMode.OPTIONAL,

@@ -247,7 +247,12 @@ data class EventCondition(
     val who: PlayerRef = PlayerRef.OPPONENT,
     /** 「このカードが〜した場合」にする。true のとき [who] と [filters] は見ない。 */
     val selfOnly: Boolean = false,
-    val filters: List<CardFilter> = emptyList()
+    val filters: List<CardFilter> = emptyList(),
+    /**
+     * 「相手の効果によって」のように、その出来事の原因を限定する。
+     * [selfOnly] が true でもこの指定は見る。
+     */
+    val cause: CauseFilter = CauseFilter.ANY
 ) : Condition
 
 /**

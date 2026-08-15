@@ -201,6 +201,37 @@ enum class GameEventType(val label: String, val isPlayerEvent: Boolean = false) 
     }
 }
 
+/**
+ * 出来事の原因。エンジンが出来事を知らせるときに添える。
+ *
+ * [EFFECT] にはコストの支払いも含む（カードを発動した側が原因）。
+ */
+@Serializable
+enum class EventCause {
+    /** ルール上の処理など、原因を特定しないもの。 */
+    UNKNOWN,
+
+    /** カードの効果（コストの支払いを含む）。 */
+    EFFECT,
+
+    /** 戦闘。 */
+    BATTLE
+}
+
+/** 「相手の効果によって」のように、出来事の原因を限定する指定。 */
+@Serializable
+enum class CauseFilter(val label: String, val prefix: String) {
+    ANY("原因を問わない", ""),
+    BY_EFFECT("効果によって", "効果によって"),
+    BY_OPPONENT_EFFECT("相手の効果によって", "相手の効果によって"),
+    BY_SELF_EFFECT("自分の効果によって", "自分の効果によって"),
+    BY_BATTLE("戦闘によって", "戦闘によって");
+
+    companion object {
+        val all: List<CauseFilter> get() = entries
+    }
+}
+
 /** 場合分けの適用のしかた。 */
 @Serializable
 enum class BranchMode(val label: String, val lead: String) {

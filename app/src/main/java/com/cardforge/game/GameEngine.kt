@@ -13,7 +13,11 @@ data class CardLocation(val player: PlayerState, val zone: ZoneType, val index: 
 data class GameEvent(
     val type: GameEventType,
     val playerIndex: Int,
-    val card: CardInstance? = null
+    val card: CardInstance? = null,
+    /** 何がこの出来事を起こしたか。[GameEngine.emit] が解決中の原因を書き込む。 */
+    val cause: EventCause = EventCause.UNKNOWN,
+    /** [EventCause.EFFECT] のとき、その効果を発動したプレイヤー。 */
+    val causePlayer: Int? = null
 )
 
 /**
@@ -26,6 +30,28 @@ class GameEngine(
     val state: GameState,
     private val interaction: Interaction
 ) {
+
+    // -----------------------------------------------------------------------
+    // 出来事の原因
+    // -----------------------------------------------------------------------
+
+    /** いま処理している出来事の原因。[emit] が出来事に書き込む。 */
+    private var causeKind = EventCause.UNKNOWN
+    private var causePlayer: Int? = null
+
+    /** [block] の中で起きた出来事に、この原因を付ける。 */
+    private inline fun <R> withCause(kind: EventCause, player: Int?, block: () -> R): R {
+        val prevKind = causeKind
+        val prevPlayer = causePlayer
+        causeKind = kind
+        causePlayer = player
+        try {
+            return block()
+        } finally {
+            causeKind = prevKind
+            causePlayer = prevPlayer
+        }
+    }
 
     /** 効果が効果を呼ぶ連鎖の暴走を防ぐための深さ制限。 */
     private var triggerDepth = 0
@@ -165,10 +191,12 @@ class GameEngine(
         log("${loc.player.name}の「${inst.card.name}」は破壊された。")
         sendToGraveyard(inst)
         if (wasOnField) {
+            val cause = if (byBattle) EventCause.BATTLE else causeKind
+            val by = if (byBattle) null else causePlayer
             emit(
-                GameEvent(GameEventType.DESTROYED, loc.player.index, inst),
-                GameEvent(GameEventType.SENT_TO_GRAVEYARD, loc.player.index, inst),
-                GameEvent(GameEventType.LEFT_FIELD, loc.player.index, inst)
+                GameEvent(GameEventType.DESTROYED, loc.player.index, inst, cause, by),
+                GameEvent(GameEventType.SENT_TO_GRAVEYARD, loc.player.index, inst, cause, by),
+                GameEvent(GameEventType.LEFT_FIELD, loc.player.index, inst, cause, by)
             )
         }
     }
@@ -428,6 +456,7 @@ class GameEngine(
         controller: PlayerState
     ): Boolean {
         if (condition.event != event.type) return false
+        if (!matchesCause(condition.cause, event, controller)) return false
         if (condition.selfOnly) return event.card === holder
 
         val ownerMatches = when (condition.who) {
@@ -440,6 +469,23 @@ class GameEngine(
 
         val card = event.card ?: return false
         return matchesAll(card, condition.filters)
+    }
+
+    /** 「相手の効果によって」のような原因の指定を判定する。 */
+    private fun matchesCause(
+        filter: CauseFilter,
+        event: GameEvent,
+        controller: PlayerState
+    ): Boolean = when (filter) {
+        CauseFilter.ANY -> true
+        CauseFilter.BY_BATTLE -> event.cause == EventCause.BATTLE
+        CauseFilter.BY_EFFECT -> event.cause == EventCause.EFFECT
+        CauseFilter.BY_SELF_EFFECT ->
+            event.cause == EventCause.EFFECT && event.causePlayer == controller.index
+
+        CauseFilter.BY_OPPONENT_EFFECT ->
+            event.cause == EventCause.EFFECT &&
+                event.causePlayer != null && event.causePlayer != controller.index
     }
 
     fun canPayCosts(
@@ -475,6 +521,14 @@ class GameEngine(
         else scope.count
 
     private suspend fun payCosts(
+        costs: List<Cost>,
+        controller: PlayerState,
+        excluding: CardInstance?
+    ): Boolean = withCause(EventCause.EFFECT, controller.index) {
+        payCostsInner(costs, controller, excluding)
+    }
+
+    private suspend fun payCostsInner(
         costs: List<Cost>,
         controller: PlayerState,
         excluding: CardInstance?
@@ -947,6 +1001,14 @@ class GameEngine(
 
     /** 場合分けを含めて、効果をひととおり処理する。 */
     private suspend fun runClause(
+        clause: EffectClause,
+        controller: PlayerState,
+        source: CardInstance?
+    ) = withCause(EventCause.EFFECT, controller.index) {
+        runClauseInner(clause, controller, source)
+    }
+
+    private suspend fun runClauseInner(
         clause: EffectClause,
         controller: PlayerState,
         source: CardInstance?
@@ -1529,8 +1591,12 @@ class GameEngine(
      * 発動する。効果が効果を呼ぶ連鎖は [triggerDepth] で打ち切る。
      */
     private suspend fun emit(vararg events: GameEvent) {
-        for (event in events) {
+        for (raw in events) {
             if (state.finished || triggerDepth >= MAX_TRIGGER_DEPTH) return
+            // 出来事の側で原因を指定していなければ、いま処理中の原因を付ける。
+            val event =
+                if (raw.cause != EventCause.UNKNOWN) raw
+                else raw.copy(cause = causeKind, causePlayer = causePlayer)
             triggerDepth++
             try {
                 dispatch(event)

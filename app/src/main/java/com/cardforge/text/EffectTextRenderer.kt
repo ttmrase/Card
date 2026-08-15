@@ -184,12 +184,13 @@ object EffectTextRenderer {
 
     /** 「相手の闇属性モンスターが破壊された場合」のようなイベント条件の文。 */
     fun eventConditionToText(condition: EventCondition, master: MasterData): String {
-        if (condition.selfOnly) return "このカードが${condition.event.label}場合"
+        val by = condition.cause.prefix
+        if (condition.selfOnly) return "このカードが${by}${condition.event.label}場合"
         if (condition.event.isPlayerEvent) {
-            return "${condition.who.label}が${condition.event.label}場合"
+            return "${condition.who.label}が${by}${condition.event.label}場合"
         }
         val noun = filtersToNoun(condition.filters, master, ZoneType.FIELD)
-        return "${condition.who.label}の${noun}が${condition.event.label}場合"
+        return "${condition.who.label}の${noun}が${by}${condition.event.label}場合"
     }
 
     fun conditionToText(condition: Condition, master: MasterData): String = when (condition) {

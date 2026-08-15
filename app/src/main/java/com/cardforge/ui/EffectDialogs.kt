@@ -384,6 +384,9 @@ fun ConditionDialog(
     var eventFilters by remember {
         mutableStateOf((initial as? EventCondition)?.filters ?: emptyList())
     }
+    var eventCause by remember {
+        mutableStateOf((initial as? EventCondition)?.cause ?: CauseFilter.ANY)
+    }
     var showEventFilter by remember { mutableStateOf(false) }
     var atLeast by remember { mutableIntStateOf((initial as? CardExistsCondition)?.atLeast ?: 1) }
     var negate by remember { mutableStateOf((initial as? CardExistsCondition)?.negate ?: false) }
@@ -427,7 +430,8 @@ fun ConditionDialog(
             event = event,
             who = eventWho,
             selfOnly = eventSelfOnly,
-            filters = if (eventSelfOnly) emptyList() else eventFilters
+            filters = if (eventSelfOnly) emptyList() else eventFilters,
+            cause = eventCause
         )
 
         ConditionType.SELF_ZONE -> SelfZoneCondition(selfZones)
@@ -461,6 +465,18 @@ fun ConditionDialog(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Dropdown("出来事", GameEventType.all, event, { it.label }) { event = it }
+                        Dropdown(
+                            "何が原因で起きたか",
+                            CauseFilter.all,
+                            eventCause,
+                            { it.label }
+                        ) { eventCause = it }
+                        Text(
+                            "「相手・自分」は、この効果を持つカードの持ち主から見た呼び方です。" +
+                                "コストの支払いも、そのカードを発動した側の効果として扱います。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Checkbox(
                                 checked = eventSelfOnly,
