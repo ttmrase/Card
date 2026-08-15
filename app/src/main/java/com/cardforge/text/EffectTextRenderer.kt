@@ -123,9 +123,11 @@ object EffectTextRenderer {
             scopeToText(action.scope, master) + selectionParticle(action.scope) +
                 "デッキの${if (action.toBottom) "一番下" else "一番上"}に戻す"
 
-        is SpecialSummonAction ->
+        is SpecialSummonAction -> {
+            val positions = action.choices.joinToString("または") { it.label }
             scopeToText(action.scope, master) + selectionParticle(action.scope) +
-                "${action.controller.label}のモンスターゾーンに${action.position.label}で特殊召喚する"
+                "${action.controller.label}のモンスターゾーンに${positions}で特殊召喚する"
+        }
 
         is ModifyStatAction -> {
             val spec = action.amountSpec
@@ -257,34 +259,38 @@ object EffectTextRenderer {
         }
     }
 
-    /** 【制限】の一文。 */
+    /**
+     * 【制限】の一文。
+     *
+     * [cardWide] は効果番号より前に書かれた制限かどうか。
+     * 掛ける効果を指定している場合は、その番号も文に出す。
+     */
     fun limitToText(limit: UsageLimit, master: MasterData, cardWide: Boolean): String {
         val times = limit.times.coerceAtLeast(1)
-        val prefix = when (limit.scope) {
-            LimitScope.THIS_CARD -> if (cardWide) "このカードは" else "この効果は"
+        val numbers = limit.clauseIndices.sorted().joinToString("") { circledNumber(it) }
+
+        // 数える単位だけで意味が通る場合は、主語を書かずに簡潔にする。
+        val head = when {
+            !cardWide -> "この効果は"
+            limit.clauseIndices.isNotEmpty() && limit.applies == LimitApplies.EACH ->
+                "${numbers}はそれぞれ"
+
+            limit.clauseIndices.isNotEmpty() -> "${numbers}は合わせて"
+            limit.applies == LimitApplies.EACH -> "それぞれの効果は"
+            limit.scope == LimitScope.THIS_CARD -> "このカードは"
+            else -> ""
+        }
+
+        val counting = when (limit.scope) {
+            LimitScope.THIS_CARD -> ""
             LimitScope.SAME_NAME -> "同名カードを含めて"
             LimitScope.CATEGORY ->
                 if (limit.categoryId != null) "「${master.categoryName(limit.categoryId)}」カードを含めて"
                 else "このカードと同じカテゴリのカードを含めて"
         }
-        return if (times == 1) "${prefix}1ターンに1度しか発動できない"
-        else "${prefix}1ターンに${times}度まで発動できる"
-    }
 
-    /** 【永続効果】の1文。 */
-    fun continuousToText(effect: ContinuousEffect, master: MasterData): String {
-        val subject = effect.scope?.let { scopeToText(it, master, withCount = false) }
-            ?: "このカード"
-        return when (effect) {
-            is StatBuffEffect -> {
-                val verb = if (effect.amount >= 0) "アップする" else "ダウンする"
-                "${subject}の${effect.stat.label}は${kotlin.math.abs(effect.amount)}$verb"
-            }
-
-            is ProtectionEffect -> "${subject}は${effect.kind.label}"
-
-            is CannotAttackEffect -> "${subject}は攻撃できない"
-        }
+        return if (times == 1) "$head${counting}1ターンに1度しか発動できない"
+        else "$head${counting}1ターンに${times}度まで発動できる"
     }
 
     // -----------------------------------------------------------------------

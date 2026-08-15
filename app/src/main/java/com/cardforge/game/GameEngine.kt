@@ -694,10 +694,21 @@ class GameEngine(
                         log("モンスターゾーンに空きが無いため特殊召喚できない。")
                         break
                     }
+                    val choices = action.choices
+                    val position = if (choices.size <= 1) {
+                        choices.first()
+                    } else {
+                        val picked = interaction.chooseOption(
+                            controller.index,
+                            "「${target.card.name}」を出す表示形式を選択",
+                            choices.map { it.label }
+                        )
+                        choices[picked.coerceIn(choices.indices)]
+                    }
                     removeFromCurrent(target)
                     resetInstance(target)
                     destination.monsterZones[zone] = target
-                    applyPosition(target, action.position)
+                    applyPosition(target, position)
                     target.summonedOnTurn = state.turn
                     log("${destination.name}は「${target.card.name}」を特殊召喚した。")
                     emit(
@@ -1064,13 +1075,30 @@ class GameEngine(
         return if (clauseIndex == null) scopePart else "$scopePart#$clauseIndex"
     }
 
+    /** 効果番号より前に書いた制限の枠。適用範囲の指定によって分かれる。 */
+    private fun cardWideLimitKey(
+        limit: UsageLimit,
+        inst: CardInstance,
+        clauseIndex: Int
+    ): String {
+        val group =
+            if (limit.clauseIndices.isEmpty()) "all"
+            else limit.clauseIndices.sorted().joinToString(",")
+        return when (limit.applies) {
+            LimitApplies.EACH -> limitKey(limit, inst, clauseIndex) + "@$group"
+            LimitApplies.TOGETHER -> limitKey(limit, inst, null) + "@$group"
+        }
+    }
+
     /** この発動が消費する制限の枠と、その上限の一覧。 */
     private fun applicableLimits(
         inst: CardInstance,
         clauseIndex: Int
     ): List<Pair<String, Int>> {
         val effect = inst.card.effect ?: return emptyList()
-        val cardWide = effect.limits.map { limitKey(it, inst, null) to it.times.coerceAtLeast(1) }
+        val cardWide = effect.limits
+            .filter { it.coversClause(clauseIndex) }
+            .map { cardWideLimitKey(it, inst, clauseIndex) to it.times.coerceAtLeast(1) }
         val perClause = effect.clauseLimitsFor(clauseIndex)
             .map { limitKey(it, inst, clauseIndex) to it.times.coerceAtLeast(1) }
         return cardWide + perClause
@@ -1346,6 +1374,13 @@ class GameEngine(
         return if (picked == CARD_ACTIVATION) activateCardItself(inst, controller)
         else activateClause(inst, picked, controller)
     }
+
+    /** 効果番号を指定して発動する。選択を挟まずに試したいときに使う。 */
+    suspend fun activateClauseForTest(
+        inst: CardInstance,
+        clauseIndex: Int,
+        controller: PlayerState
+    ): Boolean = activateClause(inst, clauseIndex, controller)
 
     private suspend fun activateClause(
         inst: CardInstance,

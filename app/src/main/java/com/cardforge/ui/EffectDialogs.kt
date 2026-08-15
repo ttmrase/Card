@@ -8,6 +8,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.cardforge.game.EffectNumbers
 import com.cardforge.model.*
 import com.cardforge.text.EffectTextRenderer
 import com.cardforge.ui.theme.Surface2
@@ -127,6 +128,9 @@ fun ActionDialog(
     var summonController by remember {
         mutableStateOf((initial as? SpecialSummonAction)?.controller ?: PlayerRef.SELF)
     }
+    var summonPositions by remember {
+        mutableStateOf((initial as? SpecialSummonAction)?.choices ?: listOf(Position.ATTACK))
+    }
     var stat by remember {
         mutableStateOf((initial as? ModifyStatAction)?.stat ?: StatKind.ATK)
     }
@@ -158,7 +162,12 @@ fun ActionDialog(
         ActionType.TO_HAND -> ToHandAction(scope)
         ActionType.TO_GRAVE -> ToGraveAction(scope)
         ActionType.TO_DECK -> ToDeckAction(scope, toBottom)
-        ActionType.SPECIAL_SUMMON -> SpecialSummonAction(scope, position, summonController)
+        ActionType.SPECIAL_SUMMON -> SpecialSummonAction(
+            scope = scope,
+            position = summonPositions.firstOrNull() ?: Position.ATTACK,
+            controller = summonController,
+            positionChoices = summonPositions
+        )
         ActionType.MODIFY_STAT -> ModifyStatAction(scope, stat, deltaValue = statValue)
         ActionType.CHANGE_POSITION -> ChangePositionAction(scope, position)
         ActionType.DRAW -> DrawAction(who, amount)
@@ -203,7 +212,31 @@ fun ActionDialog(
                         Dropdown("特殊召喚する側", PlayerRef.all, summonController, { it.label }) {
                             summonController = it
                         }
-                        Dropdown("表示形式", Position.all, position, { it.label }) { position = it }
+                        Text(
+                            "選べる表示形式",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        FlowRowSimple {
+                            Position.all.forEach { candidate ->
+                                Chip(candidate.label, selected = candidate in summonPositions) {
+                                    summonPositions =
+                                        if (candidate in summonPositions) {
+                                            (summonPositions - candidate)
+                                                .ifEmpty { listOf(candidate) }
+                                        } else {
+                                            summonPositions + candidate
+                                        }
+                                }
+                            }
+                        }
+                        Text(
+                            if (summonPositions.size > 1)
+                                "2つ以上選ぶと、効果を処理するときにプレイヤーが選びます。"
+                            else "1つだけ選ぶと、その表示形式で固定されます。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
 
                     ActionType.CHANGE_POSITION ->
@@ -676,17 +709,23 @@ fun CostDialog(
 fun LimitDialog(
     master: MasterData,
     initial: UsageLimit? = null,
+    /** 効果番号より前に書く制限のとき、掛ける効果を選ばせるための効果数。 */
+    clauseCount: Int = 0,
     onDismiss: () -> Unit,
     onConfirm: (UsageLimit) -> Unit
 ) {
     var scope by remember { mutableStateOf(initial?.scope ?: LimitScope.THIS_CARD) }
     var times by remember { mutableIntStateOf(initial?.times ?: 1) }
     var categoryId by remember { mutableStateOf(initial?.categoryId) }
+    var clauseIndices by remember { mutableStateOf(initial?.clauseIndices ?: emptyList()) }
+    var applies by remember { mutableStateOf(initial?.applies ?: LimitApplies.TOGETHER) }
 
     fun build() = UsageLimit(
         scope = scope,
         times = times.coerceAtLeast(1),
-        categoryId = if (scope == LimitScope.CATEGORY) categoryId else null
+        categoryId = if (scope == LimitScope.CATEGORY) categoryId else null,
+        clauseIndices = if (clauseCount > 0) clauseIndices else emptyList(),
+        applies = if (clauseCount > 0) applies else LimitApplies.TOGETHER
     )
 
     AlertDialog(
@@ -701,6 +740,35 @@ fun LimitDialog(
             ) {
                 Dropdown("数える単位", LimitScope.all, scope, { it.label }) { scope = it }
                 NumberField("1ターンに発動できる回数", times) { times = it }
+
+                if (clauseCount > 0) {
+                    HorizontalDivider()
+                    Text(
+                        "掛ける効果（選ばなければ全ての効果）",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    FlowRowSimple {
+                        (0 until clauseCount).forEach { index ->
+                            Chip(
+                                EffectNumbers.circled(index),
+                                selected = index in clauseIndices
+                            ) {
+                                clauseIndices =
+                                    if (index in clauseIndices) clauseIndices - index
+                                    else clauseIndices + index
+                            }
+                        }
+                    }
+                    Dropdown("数え方", LimitApplies.all, applies, { it.label }) { applies = it }
+                    Text(
+                        "「効果ごとに別々に数える」を選ぶと、①②それぞれが1ターンに1度ずつ" +
+                            "発動できるようになります。「まとめて数える」なら、選んだ効果の" +
+                            "うちどれか1つしか発動できません。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
 
                 if (scope == LimitScope.CATEGORY) {
                     Dropdown(
@@ -720,7 +788,9 @@ fun LimitDialog(
                 HorizontalDivider()
                 Surface(color = Surface2, shape = MaterialTheme.shapes.small) {
                     Text(
-                        EffectTextRenderer.limitToText(build(), master, cardWide = true) + "。",
+                        EffectTextRenderer.limitToText(
+                            build(), master, cardWide = clauseCount > 0
+                        ) + "。",
                         style = MaterialTheme.typography.bodyMedium,
                         modifier = Modifier
                             .fillMaxWidth()

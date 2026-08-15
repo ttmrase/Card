@@ -181,6 +181,8 @@ fun EffectEditorSection(
         LimitDialog(
             master = master,
             initial = slot.itemIndex?.let { effect.limitsAt(slot).getOrNull(it) },
+            // 効果番号より前の制限だけ、掛ける効果を選べるようにする。
+            clauseCount = if (slot.clauseIndex == null) effect.clauses.size else 0,
             onDismiss = { limitSlot = null },
             onConfirm = { limit ->
                 onChange(effect.withLimits(slot) { it.upsert(slot.itemIndex, limit) })

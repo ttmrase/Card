@@ -152,8 +152,12 @@ object DefaultData {
                                         count = 1,
                                         selection = SelectionMode.CHOOSE
                                     ),
-                                    position = Position.ATTACK,
-                                    controller = PlayerRef.SELF
+                                    controller = PlayerRef.SELF,
+                                    // 出すときに表示形式を選べる。
+                                    positionChoices = listOf(
+                                        Position.ATTACK,
+                                        Position.DEFENSE
+                                    )
                                 )
                             )
                         )
@@ -167,6 +171,14 @@ object DefaultData {
                 name = "知識の巻物",
                 kind = CardKind.SPELL,
                 effect = EffectText(
+                    afterActivation = AfterActivation.STAY_ON_FIELD,
+                    limits = listOf(
+                        UsageLimit(
+                            scope = LimitScope.SAME_NAME,
+                            times = 1,
+                            applies = LimitApplies.EACH
+                        )
+                    ),
                     clauses = listOf(
                         EffectClause(
                             actions = listOf(DrawAction(PlayerRef.SELF, 2))

@@ -115,8 +115,15 @@ data class ToDeckAction(val scope: CardScope, val toBottom: Boolean = false) : A
 data class SpecialSummonAction(
     val scope: CardScope,
     val position: Position = Position.ATTACK,
-    val controller: PlayerRef = PlayerRef.SELF
-) : Action
+    val controller: PlayerRef = PlayerRef.SELF,
+    /**
+     * 選べる表示形式。2つ以上あれば、効果を処理するときにプレイヤーが選ぶ。
+     * 空のときは [position] で固定。
+     */
+    val positionChoices: List<Position> = emptyList()
+) : Action {
+    val choices: List<Position> get() = positionChoices.ifEmpty { listOf(position) }
+}
 
 @Serializable
 @SerialName("modifyStat")
@@ -346,8 +353,22 @@ data class UsageLimit(
     val scope: LimitScope = LimitScope.THIS_CARD,
     val times: Int = 1,
     /** [LimitScope.CATEGORY] のとき数える対象のカテゴリ。null ならこのカードのカテゴリ。 */
-    val categoryId: String? = null
-)
+    val categoryId: String? = null,
+    /**
+     * 掛ける効果の番号（0 始まり）。空なら全ての効果に掛かる。
+     * 効果番号より前に書く制限でだけ意味を持つ。
+     */
+    val clauseIndices: List<Int> = emptyList(),
+    /**
+     * [LimitApplies.TOGETHER] なら対象の効果をまとめて数え、
+     * [LimitApplies.EACH] なら効果ごとに別々に数える。
+     */
+    val applies: LimitApplies = LimitApplies.TOGETHER
+) {
+    /** [index] 番目の効果に掛かるか。 */
+    fun coversClause(index: Int): Boolean =
+        clauseIndices.isEmpty() || index in clauseIndices
+}
 
 // ---------------------------------------------------------------------------
 // 効果テキスト本体。

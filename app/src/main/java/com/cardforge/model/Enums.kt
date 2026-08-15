@@ -139,6 +139,17 @@ enum class AfterActivation(val label: String) {
     }
 }
 
+/** 【制限】をどの効果に、どう当てはめるか。 */
+@Serializable
+enum class LimitApplies(val label: String) {
+    TOGETHER("まとめて数える"),
+    EACH("効果ごとに別々に数える");
+
+    companion object {
+        val all: List<LimitApplies> get() = entries
+    }
+}
+
 /** 【制限】発動回数を数える単位。 */
 @Serializable
 enum class LimitScope(val label: String) {
