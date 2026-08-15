@@ -288,6 +288,33 @@ data class BanishFromGraveCost(
 @SerialName("millCost")
 data class MillCost(val count: Int) : Cost
 
+/** コストで動かす先。 */
+@Serializable
+enum class MoveDestination(val label: String) {
+    GRAVEYARD("墓地へ送る"),
+    BANISHED("除外する"),
+    HAND("手札に戻す"),
+    DECK_TOP("デッキの一番上に戻す"),
+    DECK_BOTTOM("デッキの一番下に戻す");
+
+    companion object {
+        val all: List<MoveDestination> get() = entries
+    }
+}
+
+/**
+ * 対象指定で選んだカードを動かすコスト。
+ *
+ * 効果と同じ対象指定が使えるので、「墓地のカードをデッキに戻す」
+ * 「自分フィールドの闇属性モンスターをリリースする」なども書ける。
+ */
+@Serializable
+@SerialName("moveCost")
+data class MoveCost(
+    val scope: CardScope,
+    val destination: MoveDestination = MoveDestination.GRAVEYARD
+) : Cost
+
 /**
  * 発動するこのカード自身をコストにする。
  * 手札で発動するモンスターを「コストとして墓地へ送る」形にしたいときに使う。

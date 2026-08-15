@@ -455,8 +455,18 @@ class GameEngine(
             is MillCost -> controller.deck.size >= cost.count
 
             is DiscardSelfCost -> excluding != null
+
+            is MoveCost ->
+                candidates(cost.scope, controller, excluding)
+                    .count { it !== excluding } >= requiredCount(cost.scope)
         }
     }
+
+    /** その対象指定で必要な枚数。「全て」なら最低1枚。 */
+    private fun requiredCount(scope: CardScope): Int =
+        if (scope.selfOnly) 1
+        else if (scope.selection == SelectionMode.ALL) 1
+        else scope.count
 
     private suspend fun payCosts(
         costs: List<Cost>,
@@ -512,6 +522,28 @@ class GameEngine(
                     log("${controller.name}はデッキの上から${cost.count}枚を墓地へ送った。")
                 }
 
+                is MoveCost -> {
+                    val pool = candidates(cost.scope, controller, excluding)
+                        .filter { it !== excluding }
+                    if (pool.isEmpty()) return false
+                    val needed = requiredCount(cost.scope)
+                    val chosen = when {
+                        cost.scope.selection == SelectionMode.ALL -> pool
+                        cost.scope.selection == SelectionMode.RANDOM -> pool.shuffled().take(needed)
+                        else -> interaction.chooseCards(
+                            controller.index,
+                            "コスト：${cost.destination.label}カードを${needed}枚選択",
+                            pool, needed, needed
+                        )
+                    }
+                    if (chosen.size < needed) return false
+                    chosen.forEach { moveForCost(it, cost.destination) }
+                    log(
+                        "${controller.name}はコストとして" +
+                            "${chosen.size}枚を${cost.destination.label}。"
+                    )
+                }
+
                 is DiscardSelfCost -> {
                     val self = excluding ?: return false
                     if (cost.banish) {
@@ -525,6 +557,16 @@ class GameEngine(
             }
         }
         return true
+    }
+
+    private fun moveForCost(inst: CardInstance, destination: MoveDestination) {
+        when (destination) {
+            MoveDestination.GRAVEYARD -> sendToGraveyard(inst)
+            MoveDestination.BANISHED -> banish(inst)
+            MoveDestination.HAND -> returnToHand(inst)
+            MoveDestination.DECK_TOP -> returnToDeck(inst, toBottom = false)
+            MoveDestination.DECK_BOTTOM -> returnToDeck(inst, toBottom = true)
+        }
     }
 
     // =======================================================================
@@ -844,8 +886,60 @@ class GameEngine(
             }
 
             conditionsMet(effect.conditionsFor(index), controller, inst) &&
-                canPayCosts(effect.costsFor(index), controller, excluding = inst)
+                canPayCosts(effect.costsFor(index), controller, excluding = inst) &&
+                canResolveActions(clause, controller, inst)
         }
+    }
+
+    /** その述語が対象にするカードの範囲。プレイヤーが対象なら null。 */
+    private fun scopeOf(action: Action): CardScope? = when (action) {
+        is DestroyAction -> action.scope
+        is BanishAction -> action.scope
+        is ToHandAction -> action.scope
+        is ToGraveAction -> action.scope
+        is ToDeckAction -> action.scope
+        is SpecialSummonAction -> action.scope
+        is ModifyStatAction -> action.scope
+        is ChangePositionAction -> action.scope
+        is SetSpellTrapAction -> action.scope
+        is PlaceSpellTrapAction -> action.scope
+        is ActivateCardAction -> action.scope
+        is GrantProtectionAction -> action.scope
+        is PreventAttackAction -> action.scope
+        else -> null
+    }
+
+    /** その述語がカードを別の場所へ動かすか。 */
+    private fun movesCards(action: Action): Boolean = when (action) {
+        is DestroyAction, is BanishAction, is ToHandAction, is ToGraveAction,
+        is ToDeckAction, is SpecialSummonAction, is SetSpellTrapAction,
+        is PlaceSpellTrapAction -> true
+
+        else -> false
+    }
+
+    /**
+     * その効果を、書いてある順に最後まで処理できるか。
+     *
+     * 途中で対象が足りなくなる効果は発動できない。前の処理でカードが
+     * 動くぶんは差し引いて数える。
+     */
+    fun canResolveActions(
+        clause: EffectClause,
+        controller: PlayerState,
+        source: CardInstance?
+    ): Boolean {
+        val consumed = mutableListOf<CardInstance>()
+        for (action in clause.actions) {
+            val scope = scopeOf(action) ?: continue
+            val pool = candidates(scope, controller, source).filter { card ->
+                consumed.none { it === card }
+            }
+            val needed = requiredCount(scope)
+            if (pool.size < needed) return false
+            if (movesCards(action)) consumed += pool.take(needed)
+        }
+        return true
     }
 
     /**
@@ -979,6 +1073,9 @@ class GameEngine(
                 !canPayCosts(effect.costsFor(index), controller, excluding = inst) ->
                     "【コスト】を支払えない。"
 
+                !canResolveActions(effect.clauses[index], controller, inst) ->
+                    "効果を最後まで処理できる対象がそろっていない。"
+
                 needsFieldPlacement(inst, effectiveLocations(effect, index)) &&
                     controller.freeSpellTrapZones().isEmpty() ->
                     "魔法・罠ゾーンに空きが無い。"
@@ -1075,7 +1172,11 @@ class GameEngine(
 
         if (!limitsAllow(inst, CARD_ACTIVATION, controller)) return false
         if (!conditionsMet(effect.conditions, controller, inst)) return false
-        return canPayCosts(effect.costs, controller, excluding = inst)
+        if (!canPayCosts(effect.costs, controller, excluding = inst)) return false
+        // 発動時処理があるなら、それを最後まで通せることを確かめる。
+        return effect.onActivationClauses().all { index ->
+            canResolveActions(effect.clauses[index], controller, inst)
+        }
     }
 
     /**
@@ -1374,7 +1475,8 @@ class GameEngine(
 
         if (!limitsAllow(inst, index, controller)) return false
         if (!conditionsMet(effect.conditionsFor(index), controller, inst, event)) return false
-        return canPayCosts(effect.costsFor(index), controller, excluding = inst)
+        if (!canPayCosts(effect.costsFor(index), controller, excluding = inst)) return false
+        return canResolveActions(clause, controller, inst)
     }
 
     // =======================================================================

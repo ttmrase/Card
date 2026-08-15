@@ -481,12 +481,10 @@ fun ConditionDialog(
 // ===========================================================================
 
 private enum class CostType(val label: String) {
+    MOVE("カードを動かす（対象を自由に指定）"),
     PAY_LIFE("ライフを払う"),
-    DISCARD("手札を捨てる"),
     SELF_TO_GRAVE("このカードを墓地へ送る"),
     SELF_BANISH("このカードを除外する"),
-    TRIBUTE("自分のモンスターをリリースする"),
-    BANISH_GRAVE("自分の墓地のカードを除外する"),
     MILL("自分のデッキから墓地へ送る")
 }
 
@@ -496,19 +494,19 @@ fun CostDialog(
     onDismiss: () -> Unit,
     onConfirm: (Cost) -> Unit
 ) {
-    var type by remember { mutableStateOf(CostType.PAY_LIFE) }
+    var type by remember { mutableStateOf(CostType.MOVE) }
     var amount by remember { mutableIntStateOf(500) }
     var count by remember { mutableIntStateOf(1) }
-    var filters by remember { mutableStateOf(listOf<CardFilter>()) }
-    var showFilterDialog by remember { mutableStateOf(false) }
+    var scope by remember {
+        mutableStateOf(CardScope(who = PlayerRef.SELF, zone = ZoneType.HAND, count = 1))
+    }
+    var destination by remember { mutableStateOf(MoveDestination.GRAVEYARD) }
 
     fun build(): Cost = when (type) {
+        CostType.MOVE -> MoveCost(scope, destination)
         CostType.PAY_LIFE -> PayLifeCost(amount.coerceAtLeast(0))
         CostType.SELF_TO_GRAVE -> DiscardSelfCost(banish = false)
         CostType.SELF_BANISH -> DiscardSelfCost(banish = true)
-        CostType.DISCARD -> DiscardCost(count.coerceAtLeast(1), filters)
-        CostType.TRIBUTE -> TributeCost(count.coerceAtLeast(1), filters)
-        CostType.BANISH_GRAVE -> BanishFromGraveCost(count.coerceAtLeast(1), filters)
         CostType.MILL -> MillCost(count.coerceAtLeast(1))
     }
 
@@ -525,6 +523,21 @@ fun CostDialog(
                 Dropdown("コストの種類", CostType.entries.toList(), type, { it.label }) { type = it }
 
                 when (type) {
+                    CostType.MOVE -> {
+                        HorizontalDivider()
+                        Text(
+                            "効果と同じ対象指定が使えます。" +
+                                "「自分の墓地のカード1枚をデッキの一番上に戻す」のような" +
+                                "コストも書けます。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        CardScopeEditor(scope, master) { scope = it }
+                        Dropdown(
+                            "動かす先", MoveDestination.all, destination, { it.label }
+                        ) { destination = it }
+                    }
+
                     CostType.PAY_LIFE -> NumberField("支払うライフ", amount) { amount = it }
 
                     CostType.SELF_TO_GRAVE, CostType.SELF_BANISH -> Text(
@@ -536,24 +549,6 @@ fun CostDialog(
                     )
 
                     else -> NumberField("枚数／体数", count) { count = it }
-                }
-
-                if (type == CostType.DISCARD || type == CostType.TRIBUTE ||
-                    type == CostType.BANISH_GRAVE
-                ) {
-                    Text(
-                        "対象を限定する（任意）",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    FlowRowSimple {
-                        filters.forEachIndexed { index, filter ->
-                            Chip(filterChipLabel(filter, master) + " ✕", selected = true) {
-                                filters = filters.toMutableList().also { it.removeAt(index) }
-                            }
-                        }
-                        Chip("＋ 条件を追加") { showFilterDialog = true }
-                    }
                 }
 
                 HorizontalDivider()
@@ -572,16 +567,7 @@ fun CostDialog(
         dismissButton = { TextButton(onClick = onDismiss) { Text("キャンセル") } }
     )
 
-    if (showFilterDialog) {
-        FilterDialog(
-            master = master,
-            onDismiss = { showFilterDialog = false },
-            onConfirm = {
-                filters = filters + it
-                showFilterDialog = false
-            }
-        )
-    }
+
 }
 
 // ===========================================================================

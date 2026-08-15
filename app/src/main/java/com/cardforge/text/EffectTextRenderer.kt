@@ -229,6 +229,9 @@ object EffectTextRenderer {
 
         is DiscardSelfCost ->
             if (cost.banish) "このカードを除外する" else "このカードを墓地へ送る"
+
+        is MoveCost ->
+            scopeToText(cost.scope, master) + "を" + cost.destination.label
     }
 
     /** 数値の指定を文にする。「自分の墓地のモンスターの数×100」など。 */

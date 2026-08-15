@@ -271,8 +271,27 @@ class LibraryRepository(private val context: Context) {
      * カードは ID が一致するものを上書きするので、同じファイルを2回取り込んでも
      * 増えていかない。
      */
-    fun importExchange(text: String): Result<ImportSummary> = runCatching {
-        val payload = json.decodeFromString(CardExchange.serializer(), text)
+    /** 書き出しファイルを読むだけ。取り込む前に中身を見せるために使う。 */
+    fun parseExchange(text: String): Result<CardExchange> = runCatching {
+        json.decodeFromString(CardExchange.serializer(), text)
+    }
+
+    fun importExchange(text: String): Result<ImportSummary> =
+        parseExchange(text).mapCatching { importSelection(it, null, null) }
+
+    /**
+     * [payload] のうち、[cardIds] と [deckIds] に含まれるものだけを取り込む。
+     * null なら全て取り込む。
+     */
+    fun importSelection(
+        source: CardExchange,
+        cardIds: Set<String>?,
+        deckIds: Set<String>?
+    ): ImportSummary {
+        val payload = source.copy(
+            cards = source.cards.filter { cardIds == null || it.id in cardIds },
+            decks = source.decks.filter { deckIds == null || it.id in deckIds }
+        )
         val current = library
         val master = current.master
 
@@ -348,7 +367,7 @@ class LibraryRepository(private val context: Context) {
         library = current.copy(master = newMaster, cards = cards, decks = decks)
         persist()
 
-        ImportSummary(added, updated, addedDecks, addedMaster)
+        return ImportSummary(added, updated, addedDecks, addedMaster)
     }
 
     private companion object {

@@ -38,17 +38,25 @@ fun CardListScreen(
     var pendingDelete by remember { mutableStateOf<CardDef?>(null) }
     var preview by remember { mutableStateOf<CardDef?>(null) }
     var message by remember { mutableStateOf<String?>(null) }
+    var exportSelection by remember { mutableStateOf<ExchangeSelection?>(null) }
+    var choosingExport by remember { mutableStateOf(false) }
+    var importPayload by remember { mutableStateOf<com.cardforge.data.CardExchange?>(null) }
+    var importSelection by remember { mutableStateOf<ExchangeSelection?>(null) }
     val context = LocalContext.current
 
     // 書き出しは端末のファイルとして保存する。イラストも埋め込まれる。
     val exportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/json")
     ) { uri ->
-        if (uri == null) return@rememberLauncherForActivityResult
+        val selection = exportSelection
+        exportSelection = null
+        if (uri == null || selection == null) return@rememberLauncherForActivityResult
         message = runCatching {
-            val text = repository.exportAll()
+            val chosenCards = library.cards.filter { it.id in selection.cardIds }
+            val chosenDecks = library.decks.filter { it.id in selection.deckIds }
+            val text = repository.buildExport(chosenCards, chosenDecks)
             context.contentResolver.openOutputStream(uri)?.use { it.write(text.toByteArray()) }
-            "カード${library.cards.size}枚とデッキ${library.decks.size}個を書き出しました。"
+            "カード${chosenCards.size}枚とデッキ${chosenDecks.size}個を書き出しました。"
         }.getOrElse { "書き出しに失敗しました。" }
     }
 
@@ -56,18 +64,19 @@ fun CardListScreen(
         ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
-        message = runCatching {
+        // まず中身を読んで、何を取り込むか選ばせる。
+        runCatching {
             val text = context.contentResolver.openInputStream(uri)
                 ?.use { it.readBytes().decodeToString() }
-                ?: return@runCatching "ファイルを読み込めませんでした。"
-            repository.importExchange(text).fold(
-                onSuccess = { summary ->
-                    "取り込みました。新規カード${summary.addedCards}枚、" +
-                        "更新${summary.updatedCards}枚、デッキ${summary.addedDecks}個。"
-                },
-                onFailure = { "このファイルは読み込めませんでした。" }
+            if (text == null) {
+                message = "ファイルを読み込めませんでした。"
+                return@runCatching
+            }
+            repository.parseExchange(text).fold(
+                onSuccess = { importPayload = it },
+                onFailure = { message = "このファイルは読み込めませんでした。" }
             )
-        }.getOrElse { "取り込みに失敗しました。" }
+        }.onFailure { message = "取り込みに失敗しました。" }
     }
 
     val visible = library.cards.filter { card ->
@@ -82,7 +91,7 @@ fun CardListScreen(
             IconButton(onClick = { importLauncher.launch(arrayOf("application/json", "*/*")) }) {
                 Icon(Icons.Default.FileUpload, contentDescription = "インポート")
             }
-            IconButton(onClick = { exportLauncher.launch("cardforge-cards.json") }) {
+            IconButton(onClick = { choosingExport = true }) {
                 Icon(Icons.Default.FileDownload, contentDescription = "エクスポート")
             }
         },
@@ -140,6 +149,39 @@ fun CardListScreen(
                 }
             }
         }
+    }
+
+    if (choosingExport) {
+        ExchangeSelectionDialog(
+            title = "書き出す内容を選択",
+            confirmLabel = "書き出す",
+            cards = library.cards,
+            decks = library.decks,
+            master = library.master,
+            onDismiss = { choosingExport = false },
+            onConfirm = { selection ->
+                choosingExport = false
+                exportSelection = selection
+                exportLauncher.launch("cardforge-cards.json")
+            }
+        )
+    }
+
+    importPayload?.let { payload ->
+        ImportSelectionDialog(
+            payload = payload,
+            master = library.master,
+            onDismiss = { importPayload = null },
+            onConfirm = { selection ->
+                importSelection = selection
+                val summary = repository.importSelection(
+                    payload, selection.cardIds, selection.deckIds
+                )
+                message = "取り込みました。新規カード${summary.addedCards}枚、" +
+                    "更新${summary.updatedCards}枚、デッキ${summary.addedDecks}個。"
+                importPayload = null
+            }
+        )
     }
 
     preview?.let { card ->

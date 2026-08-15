@@ -10,6 +10,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.*
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.runtime.*
@@ -47,8 +48,7 @@ fun CardEditScreen(
             )
         )
     }
-    var showNewCategory by remember { mutableStateOf(false) }
-    var newMasterEntry by remember { mutableStateOf<MasterKind?>(null) }
+    var managingMaster by remember { mutableStateOf<MasterKind?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
 
     var cropTarget by remember { mutableStateOf<String?>(null) }
@@ -182,8 +182,8 @@ fun CardEditScreen(
                             itemLabel = { it.name },
                             modifier = Modifier.weight(1f)
                         ) { card = card.copy(attributeId = it.id) }
-                        IconButton(onClick = { newMasterEntry = MasterKind.ATTRIBUTE }) {
-                            Icon(Icons.Default.Add, contentDescription = "属性を追加")
+                        IconButton(onClick = { managingMaster = MasterKind.ATTRIBUTE }) {
+                            Icon(Icons.Default.Tune, contentDescription = "属性を追加・編集")
                         }
 
                         Dropdown(
@@ -193,8 +193,8 @@ fun CardEditScreen(
                             itemLabel = { it.name },
                             modifier = Modifier.weight(1f)
                         ) { card = card.copy(raceId = it.id) }
-                        IconButton(onClick = { newMasterEntry = MasterKind.RACE }) {
-                            Icon(Icons.Default.Add, contentDescription = "種族を追加")
+                        IconButton(onClick = { managingMaster = MasterKind.RACE }) {
+                            Icon(Icons.Default.Tune, contentDescription = "種族を追加・編集")
                         }
                     }
 
@@ -213,7 +213,9 @@ fun CardEditScreen(
             SectionCard(
                 title = "カテゴリ",
                 trailing = {
-                    TextButton(onClick = { showNewCategory = true }) { Text("新規作成") }
+                    TextButton(onClick = { managingMaster = MasterKind.CATEGORY }) {
+                        Text("追加・編集")
+                    }
                 }
             ) {
                 Text(
@@ -356,21 +358,6 @@ fun CardEditScreen(
         }
     }
 
-    if (showNewCategory) {
-        NameInputDialog(
-            title = "カテゴリを追加",
-            initial = "",
-            label = "カテゴリ名",
-            onDismiss = { showNewCategory = false },
-            onConfirm = { name ->
-                val entry = NamedEntry(newId(), name)
-                repository.updateMaster(master.copy(categories = master.categories + entry))
-                card = card.copy(categoryIds = card.categoryIds + entry.id)
-                showNewCategory = false
-            }
-        )
-    }
-
     cropTarget?.let { path ->
         ImageCropDialog(
             imagePath = path,
@@ -386,15 +373,18 @@ fun CardEditScreen(
         )
     }
 
-    newMasterEntry?.let { kind ->
-        NameInputDialog(
-            title = "${kind.label}を追加",
-            initial = "",
-            label = "${kind.label}名",
-            onDismiss = { newMasterEntry = null },
-            onConfirm = { name ->
+    managingMaster?.let { kind ->
+        val entries = when (kind) {
+            MasterKind.ATTRIBUTE -> master.attributes
+            MasterKind.RACE -> master.races
+            MasterKind.CATEGORY -> master.categories
+        }
+        MasterEntryManagerDialog(
+            kind = kind,
+            entries = entries,
+            onAdd = { name ->
                 val entry = NamedEntry(newId(), name)
-                // 追加したものをこのカードにそのまま設定する。
+                // 追加したものは、そのままこのカードに設定する。
                 when (kind) {
                     MasterKind.ATTRIBUTE -> {
                         repository.updateMaster(master.copy(attributes = master.attributes + entry))
@@ -411,8 +401,33 @@ fun CardEditScreen(
                         card = card.copy(categoryIds = card.categoryIds + entry.id)
                     }
                 }
-                newMasterEntry = null
-            }
+            },
+            onRename = { entry, name ->
+                val renamed = entry.copy(name = name)
+                fun merge(list: List<NamedEntry>) =
+                    list.map { if (it.id == entry.id) renamed else it }
+                repository.updateMaster(
+                    when (kind) {
+                        MasterKind.ATTRIBUTE -> master.copy(attributes = merge(master.attributes))
+                        MasterKind.RACE -> master.copy(races = merge(master.races))
+                        MasterKind.CATEGORY -> master.copy(categories = merge(master.categories))
+                    }
+                )
+            },
+            onDelete = { entry ->
+                repository.deleteMasterEntry(kind, entry.id)
+                // 編集中のカードからも外す。
+                card = when (kind) {
+                    MasterKind.ATTRIBUTE ->
+                        if (card.attributeId == entry.id) card.copy(attributeId = null) else card
+
+                    MasterKind.RACE ->
+                        if (card.raceId == entry.id) card.copy(raceId = null) else card
+
+                    MasterKind.CATEGORY -> card.copy(categoryIds = card.categoryIds - entry.id)
+                }
+            },
+            onDismiss = { managingMaster = null }
         )
     }
 

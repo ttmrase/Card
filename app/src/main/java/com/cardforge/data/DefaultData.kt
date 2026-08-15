@@ -310,6 +310,30 @@ object DefaultData {
                 )
             ),
 
+            // --- 墓地をデッキに戻してコストにする魔法 ---
+            CardDef(
+                id = newId(),
+                name = "巡りの祈り",
+                kind = CardKind.SPELL,
+                effect = EffectText(
+                    locations = listOf(ActivationLocation.HAND, ActivationLocation.FIELD),
+                    costs = listOf(
+                        MoveCost(
+                            scope = CardScope(
+                                who = PlayerRef.SELF,
+                                zone = ZoneType.GRAVEYARD,
+                                count = 2,
+                                selection = SelectionMode.CHOOSE
+                            ),
+                            destination = MoveDestination.DECK_BOTTOM
+                        )
+                    ),
+                    clauses = listOf(
+                        EffectClause(actions = listOf(DrawAction(PlayerRef.SELF, 1)))
+                    )
+                )
+            ),
+
             // --- 墓地の数で威力が変わる魔法 ---
             CardDef(
                 id = newId(),
