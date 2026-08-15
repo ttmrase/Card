@@ -163,6 +163,37 @@ class LibraryRepository(private val context: Context) {
         target.absolutePath
     }.getOrNull()
 
+    /**
+     * [sourcePath] の画像を、正規化された矩形（0.0〜1.0）で切り抜いて保存する。
+     * 元のファイルは残さない。
+     */
+    fun cropImage(
+        sourcePath: String,
+        left: Float,
+        top: Float,
+        width: Float,
+        height: Float
+    ): String? = runCatching {
+        val source = BitmapFactory.decodeFile(sourcePath) ?: return null
+
+        val x = (left * source.width).toInt().coerceIn(0, source.width - 1)
+        val y = (top * source.height).toInt().coerceIn(0, source.height - 1)
+        val w = (width * source.width).toInt().coerceIn(1, source.width - x)
+        val h = (height * source.height).toInt().coerceIn(1, source.height - y)
+
+        val cropped = Bitmap.createBitmap(source, x, y, w, h)
+        val scaled = downscale(cropped)
+        val target = File(imageDir, "${newId()}.jpg")
+        target.outputStream().use { output ->
+            scaled.compress(Bitmap.CompressFormat.JPEG, 85, output)
+        }
+        if (scaled !== cropped) scaled.recycle()
+        if (cropped !== source) cropped.recycle()
+        source.recycle()
+        runCatching { File(sourcePath).delete() }
+        target.absolutePath
+    }.getOrNull()
+
     private fun downscale(source: Bitmap): Bitmap {
         val longest = maxOf(source.width, source.height)
         if (longest <= MAX_IMAGE_SIZE) return source

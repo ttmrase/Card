@@ -143,6 +143,17 @@ object EffectTextRenderer {
         is MillAction ->
             "${action.who.label}のデッキの上からカードを${action.count}枚墓地へ送る"
 
+        is SetSpellTrapAction ->
+            scopeToText(action.scope, master) + selectionParticle(action.scope) +
+                "魔法・罠ゾーンにセットする"
+
+        is PlaceSpellTrapAction ->
+            scopeToText(action.scope, master) + selectionParticle(action.scope) +
+                "魔法・罠ゾーンに表側で置く"
+
+        is ActivateCardAction ->
+            scopeToText(action.scope, master) + selectionParticle(action.scope) + "発動する"
+
         is GrantProtectionAction ->
             scopeToText(action.scope, master, withCount = false) + "は" + action.kind.label
 
@@ -298,7 +309,12 @@ object EffectTextRenderer {
             }
             // 効果番号ごとの【発動後】は、明示されていれば常に書く。
             clause.afterActivation?.let { sb.append("【発動後】" + it.label + " ") }
-            if (effect.isContinuous(index)) {
+            if (effect.isOnActivation(index)) {
+                sb.append("このカードの発動時に、")
+                sb.append(
+                    clause.actions.joinToString("。その後、") { actionToText(it, master) }
+                )
+            } else if (effect.isContinuous(index)) {
                 // 「このカードがフィールドに存在する限り、〜」という書き出しにする。
                 val where = effectiveLocationLabel(effect, index)
                 sb.append("このカードが${where}に存在する限り、")
@@ -353,7 +369,18 @@ object EffectTextRenderer {
                 "$head${action.stat.label}は${kotlin.math.abs(action.delta)}$verb"
             }
 
-            is GrantProtectionAction -> {
+            is SetSpellTrapAction ->
+            scopeToText(action.scope, master) + selectionParticle(action.scope) +
+                "魔法・罠ゾーンにセットする"
+
+        is PlaceSpellTrapAction ->
+            scopeToText(action.scope, master) + selectionParticle(action.scope) +
+                "魔法・罠ゾーンに表側で置く"
+
+        is ActivateCardAction ->
+            scopeToText(action.scope, master) + selectionParticle(action.scope) + "発動する"
+
+        is GrantProtectionAction -> {
                 val who = subject(action.scope)
                 if (who.isEmpty()) action.kind.label else "${who}は${action.kind.label}"
             }

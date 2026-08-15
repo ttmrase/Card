@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material3.*
@@ -16,6 +17,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.cardforge.data.LibraryRepository
+import com.cardforge.data.MasterKind
 import com.cardforge.model.*
 import com.cardforge.text.EffectTextRenderer
 import com.cardforge.ui.theme.Gold
@@ -45,15 +47,23 @@ fun CardEditScreen(
         )
     }
     var showNewCategory by remember { mutableStateOf(false) }
+    var newMasterEntry by remember { mutableStateOf<MasterKind?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
+
+    var cropTarget by remember { mutableStateOf<String?>(null) }
 
     val imagePicker = rememberLauncherForActivityResult(
         ActivityResultContracts.PickVisualMedia()
     ) { uri ->
         if (uri != null) {
             val path = repository.importImage(uri)
-            if (path != null) card = card.copy(imagePath = path)
-            else error = "画像の読み込みに失敗しました。"
+            if (path != null) {
+                card = card.copy(imagePath = path)
+                // 取り込んだ直後に切り抜き画面を出す。
+                cropTarget = path
+            } else {
+                error = "画像の読み込みに失敗しました。"
+            }
         }
     }
 
@@ -107,7 +117,8 @@ fun CardEditScreen(
                             Spacer(Modifier.width(4.dp))
                             Text("イラスト")
                         }
-                        if (card.imagePath != null) {
+                        card.imagePath?.let { path ->
+                            TextButton(onClick = { cropTarget = path }) { Text("切り抜き") }
                             TextButton(onClick = { card = card.copy(imagePath = null) }) {
                                 Text("削除", color = MaterialTheme.colorScheme.error)
                             }
@@ -159,7 +170,10 @@ fun CardEditScreen(
                         color = Gold
                     )
 
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.Bottom
+                    ) {
                         Dropdown(
                             label = "属性",
                             items = master.attributes,
@@ -167,6 +181,9 @@ fun CardEditScreen(
                             itemLabel = { it.name },
                             modifier = Modifier.weight(1f)
                         ) { card = card.copy(attributeId = it.id) }
+                        IconButton(onClick = { newMasterEntry = MasterKind.ATTRIBUTE }) {
+                            Icon(Icons.Default.Add, contentDescription = "属性を追加")
+                        }
 
                         Dropdown(
                             label = "種族",
@@ -175,6 +192,9 @@ fun CardEditScreen(
                             itemLabel = { it.name },
                             modifier = Modifier.weight(1f)
                         ) { card = card.copy(raceId = it.id) }
+                        IconButton(onClick = { newMasterEntry = MasterKind.RACE }) {
+                            Icon(Icons.Default.Add, contentDescription = "種族を追加")
+                        }
                     }
 
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -307,6 +327,51 @@ fun CardEditScreen(
                 repository.updateMaster(master.copy(categories = master.categories + entry))
                 card = card.copy(categoryIds = card.categoryIds + entry.id)
                 showNewCategory = false
+            }
+        )
+    }
+
+    cropTarget?.let { path ->
+        ImageCropDialog(
+            imagePath = path,
+            onDismiss = { cropTarget = null },
+            onConfirm = { rect ->
+                val cropped = repository.cropImage(
+                    path, rect.left, rect.top, rect.width, rect.height
+                )
+                if (cropped != null) card = card.copy(imagePath = cropped)
+                else error = "切り抜きに失敗しました。"
+                cropTarget = null
+            }
+        )
+    }
+
+    newMasterEntry?.let { kind ->
+        NameInputDialog(
+            title = "${kind.label}を追加",
+            initial = "",
+            label = "${kind.label}名",
+            onDismiss = { newMasterEntry = null },
+            onConfirm = { name ->
+                val entry = NamedEntry(newId(), name)
+                // 追加したものをこのカードにそのまま設定する。
+                when (kind) {
+                    MasterKind.ATTRIBUTE -> {
+                        repository.updateMaster(master.copy(attributes = master.attributes + entry))
+                        card = card.copy(attributeId = entry.id)
+                    }
+
+                    MasterKind.RACE -> {
+                        repository.updateMaster(master.copy(races = master.races + entry))
+                        card = card.copy(raceId = entry.id)
+                    }
+
+                    MasterKind.CATEGORY -> {
+                        repository.updateMaster(master.copy(categories = master.categories + entry))
+                        card = card.copy(categoryIds = card.categoryIds + entry.id)
+                    }
+                }
+                newMasterEntry = null
             }
         )
     }

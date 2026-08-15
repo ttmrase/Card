@@ -150,6 +150,21 @@ data class GrantProtectionAction(
 @SerialName("preventAttack")
 data class PreventAttackAction(val scope: CardScope) : Action
 
+/** 魔法・罠ゾーンに裏側でセットする。 */
+@Serializable
+@SerialName("setSpellTrap")
+data class SetSpellTrapAction(val scope: CardScope) : Action
+
+/** 魔法・罠ゾーンに表側で置く。発動はしないので、永続の効果だけが働く。 */
+@Serializable
+@SerialName("placeSpellTrap")
+data class PlaceSpellTrapAction(val scope: CardScope) : Action
+
+/** そのカードを発動する。 */
+@Serializable
+@SerialName("activateCard")
+data class ActivateCardAction(val scope: CardScope) : Action
+
 /** 相手が発動した効果を無効にし破壊する（罠カード向け）。 */
 @Serializable
 @SerialName("negate")
@@ -345,11 +360,27 @@ data class EffectText(
 
     /** イベント条件を持つ効果は誘発効果、持たない効果は起動効果。 */
     fun isTriggered(index: Int): Boolean =
-        !isContinuous(index) && triggersFor(index).isNotEmpty()
+        clauses.getOrNull(index)?.mode?.isStandalone == true && triggersFor(index).isNotEmpty()
 
     /** 永続の効果は発動せず、【場所】にある限り適用される。 */
     fun isContinuous(index: Int): Boolean =
         clauses.getOrNull(index)?.mode?.isContinuous == true
+
+    /** そのカードの発動時にだけ処理される効果。 */
+    fun isOnActivation(index: Int): Boolean =
+        clauses.getOrNull(index)?.mode?.isOnActivation == true
+
+    /** そのカードの発動時に処理する効果の番号。 */
+    fun onActivationClauses(): List<Int> =
+        clauses.indices.filter { isOnActivation(it) && clauses[it].actions.isNotEmpty() }
+
+    /** 発動時処理か永続の効果があれば、そのカード自体を「発動」できる。 */
+    fun supportsCardActivation(): Boolean =
+        clauses.indices.any { (isOnActivation(it) || isContinuous(it)) }
+
+    /** カードの発動そのものに対する【発動後】。 */
+    fun afterActivationForCard(kind: CardKind): AfterActivation =
+        afterActivation ?: defaultAfterActivation(kind)
 
     companion object {
         fun defaultAfterActivation(kind: CardKind): AfterActivation =

@@ -193,7 +193,7 @@ class GameEngine(
                 val effect = inst.card.effect ?: continue
                 effect.clauses.forEachIndexed { index, clause ->
                     if (!effect.isContinuous(index)) return@forEachIndexed
-                    if (!canActivateFrom(inst, effectiveLocations(effect, index))) return@forEachIndexed
+                    if (!isInLocation(inst, effectiveLocations(effect, index))) return@forEachIndexed
                     // 【条件】は常に見張る。イベント条件は永続では成立しない。
                     if (!conditionsMet(effect.conditionsFor(index), player, inst)) return@forEachIndexed
                     result += Triple(inst, player, clause)
@@ -687,6 +687,33 @@ class GameEngine(
                 }
             }
 
+            is SetSpellTrapAction -> {
+                val targets = resolveTargets(action.scope, controller, "セットするカードを選択", source)
+                placeIntoSpellTrapZone(targets, controller, faceDown = true)
+                shuffleIfDeck(action.scope, controller)
+            }
+
+            is PlaceSpellTrapAction -> {
+                val targets = resolveTargets(action.scope, controller, "置くカードを選択", source)
+                placeIntoSpellTrapZone(targets, controller, faceDown = false)
+                shuffleIfDeck(action.scope, controller)
+            }
+
+            is ActivateCardAction -> {
+                val targets = resolveTargets(action.scope, controller, "発動するカードを選択", source)
+                for (target in targets) {
+                    if (state.finished) break
+                    // 手札やデッキからでも、一度ゾーンに置いてから発動する。
+                    if (!isOnField(target) && target.card.kind != CardKind.MONSTER) {
+                        if (!placeIntoSpellTrapZone(listOf(target), controller, faceDown = false)) {
+                            break
+                        }
+                    }
+                    activateCard(target, controller)
+                }
+                shuffleIfDeck(action.scope, controller)
+            }
+
             is GrantProtectionAction -> {
                 // 発動して与えた耐性は、そのターンの間だけ続く。
                 val targets = resolveTargets(action.scope, controller, "耐性を与える対象を選択", source)
@@ -743,6 +770,20 @@ class GameEngine(
         else -> false
     }
 
+    /**
+     * カードが実際にその場所にあるか。
+     * 永続の効果は「そこから発動できるか」ではなく、そこに置かれていることが条件。
+     */
+    private fun isInLocation(
+        inst: CardInstance,
+        locations: List<ActivationLocation>
+    ): Boolean = when (locate(inst)?.zone) {
+        ZoneType.HAND -> ActivationLocation.HAND in locations
+        ZoneType.MONSTER_ZONE, ZoneType.SPELL_TRAP_ZONE -> ActivationLocation.FIELD in locations
+        ZoneType.GRAVEYARD -> ActivationLocation.GRAVEYARD in locations
+        else -> false
+    }
+
     /** 手札から発動するとき、魔法・罠ゾーンに置いてから発動する必要があるか。 */
     private fun needsFieldPlacement(
         inst: CardInstance,
@@ -763,8 +804,9 @@ class GameEngine(
             val clause = effect.clauses[index]
             if (clause.actions.isEmpty()) return@filter false
 
-            // 永続の効果は発動しない。イベント条件を持つ効果は誘発効果なので手動発動できない。
-            if (effect.isContinuous(index)) return@filter false
+            // 永続と発動時処理はそれ自体を発動できない。
+            // イベント条件を持つ効果は誘発効果なので手動では発動できない。
+            if (!clause.mode.isStandalone) return@filter false
             if (effect.isTriggered(index)) return@filter false
 
             if (!canActivateFrom(inst, effectiveLocations(effect, index))) return@filter false
@@ -914,6 +956,10 @@ class GameEngine(
             result += controller.spellsAndTraps.filter {
                 it.card.kind == CardKind.SPELL && activatableClauses(it, controller).isNotEmpty()
             }
+            // 永続魔法のように、発動時処理か永続の効果しか持たないカードの発動。
+            result += (controller.hand + controller.spellsAndTraps).filter {
+                canActivateCardItself(it, controller)
+            }
             // モンスターの起動効果。【場所】次第で手札・墓地からも発動できる。
             result += controller.monsters.filter {
                 !it.faceDown && activatableClauses(it, controller).isNotEmpty()
@@ -928,6 +974,9 @@ class GameEngine(
 
         // 罠は伏せた次のターン以降なら、どちらのターンでも発動できる。
         result += controller.spellsAndTraps.filter { canActivateTrap(it, controller) }
+        result += controller.spellsAndTraps.filter {
+            it.card.kind == CardKind.TRAP && canActivateCardItself(it, controller)
+        }
 
         // 【場所】に『手札』と書いた罠だけは、手札から直接発動できる。
         result += controller.hand.filter {
@@ -941,27 +990,132 @@ class GameEngine(
         inst.card.kind == CardKind.TRAP &&
             inst.faceDown &&
             inst.setOnTurn in 0 until state.turn &&
-            activatableClauses(inst, controller).isNotEmpty()
+            (activatableClauses(inst, controller).isNotEmpty() ||
+                canActivateCardItself(inst, controller))
+
+    /**
+     * 「カードの発動」ができるか。
+     *
+     * 永続魔法のように、発動時処理か永続の効果しか持たない魔法・罠を
+     * フィールドに出すための操作。
+     */
+    fun canActivateCardItself(inst: CardInstance, controller: PlayerState): Boolean {
+        if (inst.card.kind == CardKind.MONSTER) return false
+        val effect = inst.card.effect ?: return false
+        if (!effect.supportsCardActivation()) return false
+        // 表側で場に出ているカードは、既に発動を終えている。
+        if (isOnField(inst) && !inst.faceDown) return false
+
+        val locations = effect.locations.ifEmpty { listOf(ActivationLocation.FIELD) }
+        if (!canActivateFrom(inst, locations)) return false
+        if (needsFieldPlacement(inst, locations) && controller.freeSpellTrapZones().isEmpty()) {
+            return false
+        }
+
+        val isOwnTurn = state.turnPlayer === controller
+        val inMainPhase = state.phase == Phase.MAIN1 || state.phase == Phase.MAIN2
+        when (inst.card.kind) {
+            CardKind.SPELL -> if (!isOwnTurn || !inMainPhase) return false
+            CardKind.TRAP ->
+                // 罠は伏せた次のターン以降。
+                if (!inst.faceDown || inst.setOnTurn !in 0 until state.turn) return false
+
+            CardKind.MONSTER -> return false
+        }
+
+        if (!limitsAllow(inst, CARD_ACTIVATION, controller)) return false
+        if (!conditionsMet(effect.conditions, controller, inst)) return false
+        return canPayCosts(effect.costs, controller, excluding = inst)
+    }
+
+    /**
+     * カードそのものを発動する。魔法・罠ゾーンに出し、【発動タイプ】が
+     * 「発動時」の効果をまとめて処理してから【発動後】の処理を行う。
+     */
+    private suspend fun activateCardItself(
+        inst: CardInstance,
+        controller: PlayerState
+    ): Boolean {
+        val effect = inst.card.effect ?: return false
+        val locations = effect.locations.ifEmpty { listOf(ActivationLocation.FIELD) }
+        val placeOnField = needsFieldPlacement(inst, locations)
+
+        if (placeOnField) {
+            val zone = controller.freeSpellTrapZones().firstOrNull() ?: return false
+            controller.hand.remove(inst)
+            controller.spellTrapZones[zone] = inst
+        }
+        if (isOnField(inst)) inst.faceDown = false
+
+        log("${controller.name}は「${inst.card.name}」を発動。")
+
+        if (!payCosts(effect.costs, controller, excluding = inst)) {
+            log("「${inst.card.name}」はコストを支払えなかったため発動を取り消した。")
+            if (placeOnField) {
+                controller.spellTrapZones.indexOfFirst { it === inst }
+                    .takeIf { it >= 0 }
+                    ?.let { controller.spellTrapZones[it] = null }
+                controller.hand.add(inst)
+            }
+            return false
+        }
+
+        recordActivation(inst, CARD_ACTIVATION, controller)
+        emit(GameEvent(GameEventType.ACTIVATED, controller.index, inst))
+
+        if (offerResponse(controller, "「${inst.card.name}」の発動")) {
+            log("「${inst.card.name}」の発動は無効になった。")
+            disposeAfterActivation(inst, AfterActivation.TO_GRAVE)
+            return true
+        }
+
+        // 発動時の効果処理。
+        for (index in effect.onActivationClauses()) {
+            if (state.finished) break
+            val clause = effect.clauses[index]
+            if (!conditionsMet(effect.conditionsFor(index), controller, inst)) continue
+            if (!canPayCosts(effect.costsFor(index), controller, excluding = inst)) continue
+            if (!payCosts(clause.costs, controller, excluding = inst)) continue
+            clause.actions.forEach { action ->
+                if (!state.finished) applyAction(action, controller, source = inst)
+            }
+        }
+
+        disposeAfterActivation(inst, effect.afterActivationForCard(inst.card.kind))
+        return true
+    }
 
     /**
      * カードを発動する。効果が複数ある場合はどの番号を使うか選ばせる。
      */
     suspend fun activateCard(inst: CardInstance, controller: PlayerState): Boolean {
         val clauses = activatableClauses(inst, controller)
-        if (clauses.isEmpty()) {
+        val cardActivation = canActivateCardItself(inst, controller)
+
+        if (clauses.isEmpty() && !cardActivation) {
             val reason = whyCannotActivate(inst, controller) ?: "今は発動できない。"
             log("「${inst.card.name}」は発動できなかった：$reason")
             interaction.notify(controller.index, "「${inst.card.name}」：$reason")
             return false
         }
 
-        val clauseIndex = if (clauses.size == 1) {
-            clauses.first()
-        } else {
-            val labels = clauses.map { "${EffectNumbers.circled(it)} の効果" }
-            clauses[interaction.chooseOption(controller.index, "発動する効果を選択", labels)]
+        // 「カードの発動」と、個々の起動効果を並べて選ばせる。
+        val choices = buildList {
+            if (cardActivation) add(CARD_ACTIVATION)
+            addAll(clauses)
         }
-        return activateClause(inst, clauseIndex, controller)
+        val picked = if (choices.size == 1) {
+            choices.first()
+        } else {
+            val labels = choices.map {
+                if (it == CARD_ACTIVATION) "このカードを発動する"
+                else "${EffectNumbers.circled(it)} の効果"
+            }
+            choices[interaction.chooseOption(controller.index, "発動する内容を選択", labels)]
+        }
+
+        return if (picked == CARD_ACTIVATION) activateCardItself(inst, controller)
+        else activateClause(inst, picked, controller)
     }
 
     private suspend fun activateClause(
@@ -1021,6 +1175,36 @@ class GameEngine(
         // 【発動後】の処理。省略時は魔法・罠なら墓地へ、モンスターならそのまま。
         disposeAfterActivation(inst, effect.afterActivationFor(clauseIndex, inst.card.kind))
         return true
+    }
+
+    /**
+     * 魔法・罠ゾーンにカードを置く。置けた枚数分だけ true を返す。
+     */
+    private fun placeIntoSpellTrapZone(
+        targets: List<CardInstance>,
+        controller: PlayerState,
+        faceDown: Boolean
+    ): Boolean {
+        var placedAny = false
+        for (target in targets) {
+            if (target.card.kind == CardKind.MONSTER) continue
+            val zone = controller.freeSpellTrapZones().firstOrNull()
+            if (zone == null) {
+                log("魔法・罠ゾーンに空きが無い。")
+                break
+            }
+            removeFromCurrent(target)
+            resetInstance(target)
+            controller.spellTrapZones[zone] = target
+            target.faceDown = faceDown
+            if (faceDown) target.setOnTurn = state.turn
+            log(
+                "${controller.name}は「${target.card.name}」を魔法・罠ゾーンに" +
+                    if (faceDown) "セットした。" else "表側で置いた。"
+            )
+            placedAny = true
+        }
+        return placedAny
     }
 
     /** 【発動後】の指定に従って、発動し終えたカードを片付ける。 */
@@ -1127,7 +1311,7 @@ class GameEngine(
         val effect = inst.card.effect ?: return false
         val clause = effect.clauses.getOrNull(index) ?: return false
         if (clause.actions.isEmpty()) return false
-        if (effect.isContinuous(index)) return false
+        if (!clause.mode.isStandalone) return false
         if (!effect.isTriggered(index)) return false
         if (!canActivateFrom(inst, effectiveLocations(effect, index))) return false
 
@@ -1414,6 +1598,9 @@ class GameEngine(
         finish(1 - playerIndex, "${state.players[playerIndex].name}が降参した")
     }
 }
+
+/** 効果番号のかわりに「カードの発動そのもの」を表す番号。 */
+const val CARD_ACTIVATION = -1
 
 object EffectNumbers {
     private val CIRCLED = listOf("①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩")

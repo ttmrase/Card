@@ -285,6 +285,10 @@ object DefaultData {
                     afterActivation = AfterActivation.STAY_ON_FIELD,
                     clauses = listOf(
                         EffectClause(
+                            mode = ActivationMode.ON_ACTIVATION,
+                            actions = listOf(DrawAction(PlayerRef.SELF, 1))
+                        ),
+                        EffectClause(
                             mode = ActivationMode.CONTINUOUS,
                             actions = listOf(
                                 ModifyStatAction(
@@ -299,6 +303,30 @@ object DefaultData {
                                     ),
                                     stat = StatKind.ATK,
                                     delta = 500
+                                )
+                            )
+                        )
+                    )
+                )
+            ),
+
+            // --- デッキから罠をセットする魔法 ---
+            CardDef(
+                id = newId(),
+                name = "先読みの書",
+                kind = CardKind.SPELL,
+                effect = EffectText(
+                    clauses = listOf(
+                        EffectClause(
+                            actions = listOf(
+                                SetSpellTrapAction(
+                                    CardScope(
+                                        who = PlayerRef.SELF,
+                                        zone = ZoneType.DECK,
+                                        filters = listOf(KindFilter(CardKind.TRAP)),
+                                        count = 1,
+                                        selection = SelectionMode.CHOOSE
+                                    )
                                 )
                             )
                         )

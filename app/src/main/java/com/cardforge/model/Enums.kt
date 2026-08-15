@@ -181,9 +181,16 @@ enum class GameEventType(val label: String, val isPlayerEvent: Boolean = false) 
 enum class ActivationMode(val label: String, val suffix: String) {
     OPTIONAL("発動できる（任意）", "できる"),
     MANDATORY("発動する（強制）", "する"),
+    ON_ACTIVATION("発動時（このカードの発動時のみ処理する）", "する"),
     CONTINUOUS("永続（発動せず、その場所にある限り適用）", "する");
 
     val isContinuous: Boolean get() = this == CONTINUOUS
+
+    /** そのカードを発動したときに、発動処理の一部として解決される効果。 */
+    val isOnActivation: Boolean get() = this == ON_ACTIVATION
+
+    /** それ自体を発動できる効果か（起動効果・誘発効果）。 */
+    val isStandalone: Boolean get() = this == OPTIONAL || this == MANDATORY
 
     companion object {
         val all: List<ActivationMode> get() = entries
