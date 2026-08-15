@@ -167,7 +167,8 @@ class GameEngine(
         if (wasOnField) {
             emit(
                 GameEvent(GameEventType.DESTROYED, loc.player.index, inst),
-                GameEvent(GameEventType.SENT_TO_GRAVEYARD, loc.player.index, inst)
+                GameEvent(GameEventType.SENT_TO_GRAVEYARD, loc.player.index, inst),
+                GameEvent(GameEventType.LEFT_FIELD, loc.player.index, inst)
             )
         }
     }
@@ -406,6 +407,11 @@ class GameEngine(
                     condition.cmp.test(it.life, condition.value)
                 }
 
+                is SelfZoneCondition -> {
+                    val zone = holder?.let { locate(it)?.zone }
+                    zone != null && (condition.zones.isEmpty() || zone in condition.zones)
+                }
+
                 is PhaseCondition ->
                     condition.phases.isEmpty() || state.phase in condition.phases
 
@@ -635,9 +641,11 @@ class GameEngine(
                 val targets = resolveTargets(action.scope, controller, "除外するカードを選択", source)
                 targets.forEach {
                     val owner = locate(it)?.player?.index ?: controller.index
+                    val leftField = isOnField(it)
                     log("「${it.card.name}」を除外した。")
                     banish(it)
                     emit(GameEvent(GameEventType.BANISHED, owner, it))
+                    if (leftField) emit(GameEvent(GameEventType.LEFT_FIELD, owner, it))
                 }
                 shuffleIfDeck(action.scope, controller)
             }
@@ -645,8 +653,11 @@ class GameEngine(
             is ToHandAction -> {
                 val targets = resolveTargets(action.scope, controller, "手札に加えるカードを選択", source)
                 targets.forEach {
+                    val owner = locate(it)?.player?.index ?: controller.index
+                    val leftField = isOnField(it)
                     log("「${it.card.name}」を手札に加えた。")
                     returnToHand(it)
+                    if (leftField) emit(GameEvent(GameEventType.LEFT_FIELD, owner, it))
                 }
                 shuffleIfDeck(action.scope, controller)
             }
@@ -655,9 +666,11 @@ class GameEngine(
                 val targets = resolveTargets(action.scope, controller, "墓地へ送るカードを選択", source)
                 targets.forEach {
                     val owner = locate(it)?.player?.index ?: controller.index
+                    val leftField = isOnField(it)
                     log("「${it.card.name}」を墓地へ送った。")
                     sendToGraveyard(it)
                     emit(GameEvent(GameEventType.SENT_TO_GRAVEYARD, owner, it))
+                    if (leftField) emit(GameEvent(GameEventType.LEFT_FIELD, owner, it))
                 }
                 shuffleIfDeck(action.scope, controller)
             }
@@ -832,6 +845,8 @@ class GameEngine(
 
         ZoneType.GRAVEYARD -> ActivationLocation.GRAVEYARD in locations
 
+        ZoneType.BANISHED -> ActivationLocation.BANISHED in locations
+
         else -> false
     }
 
@@ -846,6 +861,7 @@ class GameEngine(
         ZoneType.HAND -> ActivationLocation.HAND in locations
         ZoneType.MONSTER_ZONE, ZoneType.SPELL_TRAP_ZONE -> ActivationLocation.FIELD in locations
         ZoneType.GRAVEYARD -> ActivationLocation.GRAVEYARD in locations
+        ZoneType.BANISHED -> ActivationLocation.BANISHED in locations
         else -> false
     }
 
@@ -867,7 +883,7 @@ class GameEngine(
 
         return effect.clauses.indices.filter { index ->
             val clause = effect.clauses[index]
-            if (clause.actions.isEmpty()) return@filter false
+            if (!clause.hasWork) return@filter false
 
             // 永続と発動時処理はそれ自体を発動できない。
             // イベント条件を持つ効果は誘発効果なので手動では発動できない。
@@ -918,6 +934,49 @@ class GameEngine(
         else -> false
     }
 
+    /** 場合分けを含めて、効果をひととおり処理する。 */
+    private suspend fun runClause(
+        clause: EffectClause,
+        controller: PlayerState,
+        source: CardInstance?
+    ) {
+        for (action in clause.actions) {
+            if (state.finished) return
+            applyAction(action, controller, source)
+        }
+        if (clause.branches.isEmpty() || state.finished) return
+
+        val matching = clause.branches.filter {
+            conditionsMet(it.conditions, controller, source) && it.actions.isNotEmpty()
+        }
+        if (matching.isEmpty()) {
+            log("当てはまる場合が無かった。")
+            return
+        }
+
+        val applied = when (clause.branchMode) {
+            BranchMode.FIRST_MATCH -> listOf(matching.first())
+            BranchMode.ALL_MATCHING -> matching
+            BranchMode.CHOOSE -> {
+                val labels = matching.map { branch ->
+                    branch.actions.joinToString("。") { "…" } .ifBlank { "この効果" }
+                }
+                val index = interaction.chooseOption(
+                    controller.index, "適用する効果を選択",
+                    matching.indices.map { "${it + 1}つ目" + labels.getOrElse(it) { "" } }
+                )
+                listOf(matching[index.coerceIn(matching.indices)])
+            }
+        }
+
+        for (branch in applied) {
+            for (action in branch.actions) {
+                if (state.finished) return
+                applyAction(action, controller, source)
+            }
+        }
+    }
+
     /**
      * その効果を、書いてある順に最後まで処理できるか。
      *
@@ -930,7 +989,24 @@ class GameEngine(
         source: CardInstance?
     ): Boolean {
         val consumed = mutableListOf<CardInstance>()
-        for (action in clause.actions) {
+        if (!canResolveActionList(clause.actions, controller, source, consumed)) return false
+        if (clause.branches.isEmpty()) return true
+
+        // 場合分けは、当てはまるもののうち処理しきれるものが1つでもあればよい。
+        return clause.branches.any { branch ->
+            branch.actions.isNotEmpty() &&
+                conditionsMet(branch.conditions, controller, source) &&
+                canResolveActionList(branch.actions, controller, source, consumed.toMutableList())
+        }
+    }
+
+    private fun canResolveActionList(
+        actions: List<Action>,
+        controller: PlayerState,
+        source: CardInstance?,
+        consumed: MutableList<CardInstance>
+    ): Boolean {
+        for (action in actions) {
             val scope = scopeOf(action) ?: continue
             val pool = candidates(scope, controller, source).filter { card ->
                 consumed.none { it === card }
@@ -1060,7 +1136,7 @@ class GameEngine(
 
         val reasons = effect.clauses.indices.mapNotNull { index ->
             when {
-                effect.clauses[index].actions.isEmpty() -> null
+                !effect.clauses[index].hasWork -> null
                 !canActivateFrom(inst, effectiveLocations(effect, index)) ->
                     "この場所からは発動できない。"
 
@@ -1110,7 +1186,7 @@ class GameEngine(
             result += controller.hand.filter {
                 it.card.kind == CardKind.MONSTER && activatableClauses(it, controller).isNotEmpty()
             }
-            result += controller.graveyard.filter {
+            result += (controller.graveyard + controller.banished).filter {
                 activatableClauses(it, controller).isNotEmpty()
             }
         }
@@ -1221,18 +1297,20 @@ class GameEngine(
         }
 
         // 発動時の効果処理。
+        val zoneBefore = locate(inst)?.zone
         for (index in effect.onActivationClauses()) {
             if (state.finished) break
             val clause = effect.clauses[index]
             if (!conditionsMet(effect.conditionsFor(index), controller, inst)) continue
             if (!canPayCosts(effect.costsFor(index), controller, excluding = inst)) continue
             if (!payCosts(clause.costs, controller, excluding = inst)) continue
-            clause.actions.forEach { action ->
-                if (!state.finished) applyAction(action, controller, source = inst)
-            }
+            runClause(clause, controller, inst)
         }
 
-        disposeAfterActivation(inst, effect.afterActivationForCard(inst.card.kind))
+        // 効果自身がカードを動かしていたら、そのままにしておく。
+        if (locate(inst)?.zone == zoneBefore) {
+            disposeAfterActivation(inst, effect.afterActivationForCard(inst.card.kind))
+        }
         return true
     }
 
@@ -1318,13 +1396,14 @@ class GameEngine(
             return true
         }
 
-        for (action in clause.actions) {
-            if (state.finished) break
-            applyAction(action, controller, source = inst)
-        }
+        val zoneBefore = locate(inst)?.zone
+        runClause(clause, controller, inst)
 
         // 【発動後】の処理。省略時は魔法・罠なら墓地へ、モンスターならそのまま。
-        disposeAfterActivation(inst, effect.afterActivationFor(clauseIndex, inst.card.kind))
+        // 効果自身がカードを動かしていたら、そのままにしておく。
+        if (locate(inst)?.zone == zoneBefore) {
+            disposeAfterActivation(inst, effect.afterActivationFor(clauseIndex, inst.card.kind))
+        }
         return true
     }
 
@@ -1461,7 +1540,7 @@ class GameEngine(
     ): Boolean {
         val effect = inst.card.effect ?: return false
         val clause = effect.clauses.getOrNull(index) ?: return false
-        if (clause.actions.isEmpty()) return false
+        if (!clause.hasWork) return false
         if (!clause.mode.isStandalone) return false
         if (!effect.isTriggered(index)) return false
         if (!canActivateFrom(inst, effectiveLocations(effect, index))) return false

@@ -90,7 +90,13 @@ object EffectTextRenderer {
     }
 
     /** 「を選んで」「をランダムに」など、対象と述語をつなぐ部分。 */
-    private fun selectionParticle(scope: CardScope): String = when (scope.selection) {
+    private fun selectionParticle(scope: CardScope): String {
+        // 「このカード」を指しているときは選ぶ余地が無い。
+        if (scope.selfOnly) return "を"
+        return selectionParticleFor(scope)
+    }
+
+    private fun selectionParticleFor(scope: CardScope): String = when (scope.selection) {
         SelectionMode.CHOOSE -> "を選んで"
         SelectionMode.RANDOM -> "をランダムに"
         SelectionMode.ALL -> "を"
@@ -196,6 +202,10 @@ object EffectTextRenderer {
                 "${noun}が${condition.atLeast}${counterWord}以上存在する"
             }
         }
+
+        is SelfZoneCondition ->
+            if (condition.zones.isEmpty()) "このカードがどこかに存在する場合"
+            else "このカードが" + condition.zones.joinToString("または") { it.label } + "に存在する場合"
 
         is PhaseCondition ->
             if (condition.phases.isEmpty()) "いつでも"
@@ -324,7 +334,7 @@ object EffectTextRenderer {
 
         // 各効果。
         effect.clauses.forEachIndexed { index, clause ->
-            if (clause.actions.isEmpty()) return@forEachIndexed
+            if (!clause.hasWork) return@forEachIndexed
             val sb = StringBuilder(circledNumber(index) + "：")
 
             if (clause.locations.isNotEmpty()) {
@@ -359,7 +369,7 @@ object EffectTextRenderer {
                         continuousActionToText(it, master)
                     }
                 )
-            } else {
+            } else if (clause.actions.isNotEmpty()) {
                 sb.append(
                     clause.actions.mapIndexed { position, action ->
                         val text = actionToText(action, master)
@@ -372,7 +382,8 @@ object EffectTextRenderer {
                     }.joinToString("。その後、")
                 )
             }
-            sb.append("。")
+            if (clause.actions.isNotEmpty()) sb.append("。")
+            appendBranches(sb, clause, master)
             effect.clauseLimitsFor(index).forEach { limit ->
                 sb.append(limitToText(limit, master, cardWide = false) + "。")
             }
@@ -432,6 +443,33 @@ object EffectTextRenderer {
             }
 
             else -> actionToText(action, master)
+        }
+    }
+
+    /** 「●条件：効果」の形で場合分けを書き出す。 */
+    private fun appendBranches(
+        sb: StringBuilder,
+        clause: EffectClause,
+        master: MasterData
+    ) {
+        val branches = clause.branches.filter { it.actions.isNotEmpty() }
+        if (branches.isEmpty()) return
+
+        sb.append(clause.branchMode.lead).append("。")
+        branches.forEach { branch ->
+            sb.append("\n●")
+            if (branch.conditions.isNotEmpty()) {
+                sb.append(
+                    orderedConditions(branch.conditions).joinToString("、かつ") {
+                        conditionToText(it, master)
+                    }
+                )
+            } else {
+                sb.append("それ以外の場合")
+            }
+            sb.append("：")
+            sb.append(branch.actions.joinToString("。その後、") { actionToText(it, master) })
+            sb.append("。")
         }
     }
 

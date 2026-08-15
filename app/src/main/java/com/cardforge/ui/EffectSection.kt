@@ -18,10 +18,23 @@ import com.cardforge.ui.theme.Gold
 import com.cardforge.ui.theme.Surface2
 
 /**
+ * 編集する場所。
+ *
+ * [clauseIndex] が null ならカード共通の指定、[branchIndex] が非 null なら
+ * その効果の場合分けの中、[itemIndex] が非 null なら既存の項目の編集。
+ */
+private data class EditSlot(
+    val clauseIndex: Int? = null,
+    val branchIndex: Int? = null,
+    val itemIndex: Int? = null
+)
+
+/**
  * 効果テキストのエディタ。
  *
- * 上段が効果番号より前に書かれる共通の【場所】【条件】【コスト】、
- * 下段が ①②… の各効果。各効果は自前の【場所】【条件】【コスト】を持てる。
+ * 上段が効果番号より前に書かれる共通の【場所】【条件】【コスト】【制限】、
+ * 下段が ①②… の各効果。各効果は自前の指定と、場合分け（●）を持てる。
+ * 追加済みの項目はタップすると編集できる。
  */
 @Composable
 fun EffectEditorSection(
@@ -30,17 +43,18 @@ fun EffectEditorSection(
     master: MasterData,
     onChange: (EffectText) -> Unit
 ) {
-    var conditionTarget by remember { mutableStateOf<Int?>(null) }
-    var costTarget by remember { mutableStateOf<Int?>(null) }
-    var actionTarget by remember { mutableStateOf<Pair<Int, Int?>?>(null) }
-    var limitTarget by remember { mutableStateOf<Int?>(null) }
+    var conditionSlot by remember { mutableStateOf<EditSlot?>(null) }
+    var costSlot by remember { mutableStateOf<EditSlot?>(null) }
+    var limitSlot by remember { mutableStateOf<EditSlot?>(null) }
+    var actionSlot by remember { mutableStateOf<EditSlot?>(null) }
 
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
 
         // ---- 効果番号より前の共通指定 -----------------------------------
         SectionCard(title = "全ての効果に共通する指定") {
             Text(
-                "ここに書いた【場所】【条件】【コスト】は、このカードの全ての効果の発動に必要になります。",
+                "ここに書いた指定は、このカードの全ての効果の発動に必要になります。" +
+                    "追加済みの項目はタップすると編集できます。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -54,25 +68,20 @@ fun EffectEditorSection(
             ConditionList(
                 conditions = effect.conditions,
                 master = master,
-                onAdd = { conditionTarget = COMMON },
+                onAdd = { conditionSlot = EditSlot() },
+                onEdit = { conditionSlot = EditSlot(itemIndex = it) },
                 onRemove = { index ->
-                    onChange(
-                        effect.copy(
-                            conditions = effect.conditions.toMutableList()
-                                .also { it.removeAt(index) })
-                    )
+                    onChange(effect.copy(conditions = effect.conditions.removedAt(index)))
                 }
             )
 
             CostList(
                 costs = effect.costs,
                 master = master,
-                onAdd = { costTarget = COMMON },
+                onAdd = { costSlot = EditSlot() },
+                onEdit = { costSlot = EditSlot(itemIndex = it) },
                 onRemove = { index ->
-                    onChange(
-                        effect.copy(
-                            costs = effect.costs.toMutableList().also { it.removeAt(index) })
-                    )
+                    onChange(effect.copy(costs = effect.costs.removedAt(index)))
                 }
             )
 
@@ -81,44 +90,34 @@ fun EffectEditorSection(
                 master = master,
                 label = "【制限】カード全体の発動回数",
                 cardWide = true,
-                onAdd = { limitTarget = COMMON },
+                onAdd = { limitSlot = EditSlot() },
+                onEdit = { limitSlot = EditSlot(itemIndex = it) },
                 onRemove = { index ->
-                    onChange(
-                        effect.copy(
-                            limits = effect.limits.toMutableList().also { it.removeAt(index) })
-                    )
+                    onChange(effect.copy(limits = effect.limits.removedAt(index)))
                 }
             )
 
-            run {
-                HorizontalDivider()
-                Text(
-                    "【発動後】",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Dropdown(
-                    label = "",
-                    items = AfterActivation.all,
-                    selected = effect.afterActivation
-                        ?: EffectText.defaultAfterActivation(kind),
-                    itemLabel = { it.label }
-                ) { onChange(effect.copy(afterActivation = it)) }
-                Text(
-                    if (kind == CardKind.MONSTER)
-                        "発動して解決したあと、このカードをどうするか。" +
-                            "指定しない場合はそのまま残ります。" +
-                            "手札で発動するモンスターを解決後に墓地へ送りたいなら「墓地へ送る」を選びます" +
-                            "（発動と同時に送りたい場合は【コスト】の「このカードを墓地へ送る」を使います）。"
-                    else
-                        "発動して解決したあと、このカードをどうするか。" +
-                            "通常魔法のように使い切るなら「墓地へ送る」、" +
-                            "永続魔法のように残すなら「そのまま残す」。" +
-                            "指定しない場合は「墓地へ送る」になります。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
+            HorizontalDivider()
+            Text(
+                "【発動後】",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Dropdown(
+                label = "",
+                items = AfterActivation.all,
+                selected = effect.afterActivation ?: EffectText.defaultAfterActivation(kind),
+                itemLabel = { it.label }
+            ) { onChange(effect.copy(afterActivation = it)) }
+            Text(
+                if (kind == CardKind.MONSTER)
+                    "発動して解決したあと、このカードをどうするか。指定しない場合はそのまま残ります。"
+                else
+                    "発動して解決したあと、このカードをどうするか。" +
+                        "指定しない場合は「墓地へ送る」になります。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
 
         // ---- 各効果 -----------------------------------------------------
@@ -129,35 +128,21 @@ fun EffectEditorSection(
                 kind = kind,
                 master = master,
                 onChange = { updated ->
-                    onChange(
-                        effect.copy(
-                            clauses = effect.clauses.toMutableList()
-                                .also { it[clauseIndex] = updated })
-                    )
+                    onChange(effect.copy(clauses = effect.clauses.replacedAt(clauseIndex, updated)))
                 },
                 onDelete = {
-                    onChange(
-                        effect.copy(
-                            clauses = effect.clauses.toMutableList()
-                                .also { it.removeAt(clauseIndex) })
-                    )
+                    onChange(effect.copy(clauses = effect.clauses.removedAt(clauseIndex)))
                 },
-                onAddCondition = { conditionTarget = clauseIndex },
-                onAddCost = { costTarget = clauseIndex },
-                onAddLimit = { limitTarget = clauseIndex },
-                onAddAction = { actionTarget = clauseIndex to null },
-                onEditAction = { actionIndex -> actionTarget = clauseIndex to actionIndex }
+                slot = { branchIndex, itemIndex -> EditSlot(clauseIndex, branchIndex, itemIndex) },
+                onConditionSlot = { conditionSlot = it },
+                onCostSlot = { costSlot = it },
+                onLimitSlot = { limitSlot = it },
+                onActionSlot = { actionSlot = it }
             )
         }
 
         OutlinedButton(
-            onClick = {
-                onChange(
-                    effect.copy(
-                        clauses = effect.clauses + EffectClause()
-                    )
-                )
-            },
+            onClick = { onChange(effect.copy(clauses = effect.clauses + EffectClause())) },
             modifier = Modifier.fillMaxWidth()
         ) {
             Icon(Icons.Default.Add, contentDescription = null)
@@ -168,99 +153,143 @@ fun EffectEditorSection(
 
     // ---- ダイアログ -------------------------------------------------------
 
-    conditionTarget?.let { target ->
+    conditionSlot?.let { slot ->
         ConditionDialog(
             master = master,
-            onDismiss = { conditionTarget = null },
+            initial = slot.itemIndex?.let { effect.conditionsAt(slot).getOrNull(it) },
+            onDismiss = { conditionSlot = null },
             onConfirm = { condition ->
-                onChange(
-                    if (target == COMMON) {
-                        effect.copy(conditions = effect.conditions + condition)
-                    } else {
-                        effect.copy(
-                            clauses = effect.clauses.toMutableList().also { list ->
-                                list[target] =
-                                    list[target].copy(conditions = list[target].conditions + condition)
-                            }
-                        )
-                    }
-                )
-                conditionTarget = null
+                onChange(effect.withConditions(slot) { it.upsert(slot.itemIndex, condition) })
+                conditionSlot = null
             }
         )
     }
 
-    costTarget?.let { target ->
+    costSlot?.let { slot ->
         CostDialog(
             master = master,
-            onDismiss = { costTarget = null },
+            initial = slot.itemIndex?.let { effect.costsAt(slot).getOrNull(it) },
+            onDismiss = { costSlot = null },
             onConfirm = { cost ->
-                onChange(
-                    if (target == COMMON) {
-                        effect.copy(costs = effect.costs + cost)
-                    } else {
-                        effect.copy(
-                            clauses = effect.clauses.toMutableList().also { list ->
-                                list[target] = list[target].copy(costs = list[target].costs + cost)
-                            }
-                        )
-                    }
-                )
-                costTarget = null
+                onChange(effect.withCosts(slot) { it.upsert(slot.itemIndex, cost) })
+                costSlot = null
             }
         )
     }
 
-    limitTarget?.let { target ->
+    limitSlot?.let { slot ->
         LimitDialog(
             master = master,
-            onDismiss = { limitTarget = null },
+            initial = slot.itemIndex?.let { effect.limitsAt(slot).getOrNull(it) },
+            onDismiss = { limitSlot = null },
             onConfirm = { limit ->
-                onChange(
-                    if (target == COMMON) {
-                        effect.copy(limits = effect.limits + limit)
-                    } else {
-                        effect.copy(
-                            clauses = effect.clauses.toMutableList().also { list ->
-                                list[target] = list[target].copy(
-                                    limits = list[target].limits + limit
-                                )
-                            }
-                        )
-                    }
-                )
-                limitTarget = null
+                onChange(effect.withLimits(slot) { it.upsert(slot.itemIndex, limit) })
+                limitSlot = null
             }
         )
     }
 
-    actionTarget?.let { (clauseIndex, actionIndex) ->
-        val clause = effect.clauses.getOrNull(clauseIndex)
+    actionSlot?.let { slot ->
         ActionDialog(
-            initial = actionIndex?.let { clause?.actions?.getOrNull(it) },
+            initial = slot.itemIndex?.let { effect.actionsAt(slot).getOrNull(it) },
             master = master,
-            onDismiss = { actionTarget = null },
+            onDismiss = { actionSlot = null },
             onConfirm = { action ->
-                onChange(
-                    effect.copy(
-                        clauses = effect.clauses.toMutableList().also { list ->
-                            val current = list[clauseIndex]
-                            val actions = current.actions.toMutableList()
-                            if (actionIndex == null) actions.add(action)
-                            else actions[actionIndex] = action
-                            list[clauseIndex] = current.copy(actions = actions)
-                        }
-                    )
-                )
-                actionTarget = null
+                onChange(effect.withActions(slot) { it.upsert(slot.itemIndex, action) })
+                actionSlot = null
             }
         )
     }
 }
 
-private const val COMMON = -1
+// ---------------------------------------------------------------------------
+// リストの読み書き
+// ---------------------------------------------------------------------------
 
+private fun <T> List<T>.removedAt(index: Int): List<T> =
+    toMutableList().also { it.removeAt(index) }
 
+private fun <T> List<T>.replacedAt(index: Int, value: T): List<T> =
+    toMutableList().also { it[index] = value }
+
+/** [index] が null なら末尾に追加、そうでなければ差し替える。 */
+private fun <T> List<T>.upsert(index: Int?, value: T): List<T> =
+    if (index == null) this + value else replacedAt(index, value)
+
+private fun EffectText.conditionsAt(slot: EditSlot): List<Condition> = when {
+    slot.clauseIndex == null -> conditions
+    slot.branchIndex == null -> clauses[slot.clauseIndex].conditions
+    else -> clauses[slot.clauseIndex].branches[slot.branchIndex].conditions
+}
+
+private fun EffectText.costsAt(slot: EditSlot): List<Cost> =
+    if (slot.clauseIndex == null) costs else clauses[slot.clauseIndex].costs
+
+private fun EffectText.limitsAt(slot: EditSlot): List<UsageLimit> =
+    if (slot.clauseIndex == null) limits else clauses[slot.clauseIndex].limits
+
+private fun EffectText.actionsAt(slot: EditSlot): List<Action> = when {
+    slot.clauseIndex == null -> emptyList()
+    slot.branchIndex == null -> clauses[slot.clauseIndex].actions
+    else -> clauses[slot.clauseIndex].branches[slot.branchIndex].actions
+}
+
+private fun EffectText.withConditions(
+    slot: EditSlot,
+    block: (List<Condition>) -> List<Condition>
+): EffectText = when {
+    slot.clauseIndex == null -> copy(conditions = block(conditions))
+    slot.branchIndex == null -> updateClause(slot.clauseIndex) {
+        it.copy(conditions = block(it.conditions))
+    }
+
+    else -> updateClause(slot.clauseIndex) { clause ->
+        clause.copy(
+            branches = clause.branches.replacedAt(slot.branchIndex) { branch ->
+                branch.copy(conditions = block(branch.conditions))
+            }
+        )
+    }
+}
+
+private fun EffectText.withCosts(slot: EditSlot, block: (List<Cost>) -> List<Cost>): EffectText =
+    if (slot.clauseIndex == null) copy(costs = block(costs))
+    else updateClause(slot.clauseIndex) { it.copy(costs = block(it.costs)) }
+
+private fun EffectText.withLimits(
+    slot: EditSlot,
+    block: (List<UsageLimit>) -> List<UsageLimit>
+): EffectText =
+    if (slot.clauseIndex == null) copy(limits = block(limits))
+    else updateClause(slot.clauseIndex) { it.copy(limits = block(it.limits)) }
+
+private fun EffectText.withActions(
+    slot: EditSlot,
+    block: (List<Action>) -> List<Action>
+): EffectText {
+    val clauseIndex = slot.clauseIndex ?: return this
+    return if (slot.branchIndex == null) {
+        updateClause(clauseIndex) { it.copy(actions = block(it.actions)) }
+    } else {
+        updateClause(clauseIndex) { clause ->
+            clause.copy(
+                branches = clause.branches.replacedAt(slot.branchIndex) { branch ->
+                    branch.copy(actions = block(branch.actions))
+                }
+            )
+        }
+    }
+}
+
+private fun EffectText.updateClause(index: Int, block: (EffectClause) -> EffectClause): EffectText =
+    copy(clauses = clauses.replacedAt(index, block(clauses[index])))
+
+private fun <T> List<T>.replacedAt(index: Int, block: (T) -> T): List<T> =
+    replacedAt(index, block(this[index]))
+
+// ---------------------------------------------------------------------------
+// 効果1つ分のエディタ
+// ---------------------------------------------------------------------------
 
 @Composable
 private fun ClauseEditor(
@@ -270,11 +299,11 @@ private fun ClauseEditor(
     master: MasterData,
     onChange: (EffectClause) -> Unit,
     onDelete: () -> Unit,
-    onAddCondition: () -> Unit,
-    onAddCost: () -> Unit,
-    onAddLimit: () -> Unit,
-    onAddAction: () -> Unit,
-    onEditAction: (Int) -> Unit
+    slot: (branchIndex: Int?, itemIndex: Int?) -> EditSlot,
+    onConditionSlot: (EditSlot) -> Unit,
+    onCostSlot: (EditSlot) -> Unit,
+    onLimitSlot: (EditSlot) -> Unit,
+    onActionSlot: (EditSlot) -> Unit
 ) {
     SectionCard(
         title = "効果 ${EffectNumbers.circled(index)}",
@@ -295,14 +324,9 @@ private fun ClauseEditor(
             itemLabel = { it.label }
         ) { onChange(clause.copy(mode = it)) }
         Text(
-            "「発動時」を選ぶと、このカード自体を発動したときにだけ処理されます" +
-                "（永続魔法の発動時処理など）。\n" +
-                "「永続」を選ぶと発動せず、このカードが【場所】にある限りずっと適用されます。" +
-                "（例：このカードがフィールドに存在する限り、" +
-                "「アララギ」モンスターの攻撃力は500アップする）\n" +
-                "【条件】に「〜した場合」を入れると、その出来事で発動する効果になります。" +
-                "任意なら発動するか確認し、強制なら自動で発動します。" +
-                "「〜した場合」も入れない効果は、自分のメインフェイズに手動で発動します。",
+            "「発動時」はこのカード自体を発動したときにだけ処理されます。" +
+                "「永続」は発動せず、このカードが【場所】にある限り適用されます。\n" +
+                "【条件】に「〜した場合」を入れると、その出来事で発動する効果になります。",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -318,25 +342,18 @@ private fun ClauseEditor(
             conditions = clause.conditions,
             master = master,
             label = "この効果だけの【条件】",
-            onAdd = onAddCondition,
-            onRemove = { i ->
-                onChange(
-                    clause.copy(
-                        conditions = clause.conditions.toMutableList().also { it.removeAt(i) })
-                )
-            }
+            onAdd = { onConditionSlot(slot(null, null)) },
+            onEdit = { onConditionSlot(slot(null, it)) },
+            onRemove = { onChange(clause.copy(conditions = clause.conditions.removedAt(it))) }
         )
 
         CostList(
             costs = clause.costs,
             master = master,
             label = "この効果だけの【コスト】",
-            onAdd = onAddCost,
-            onRemove = { i ->
-                onChange(
-                    clause.copy(costs = clause.costs.toMutableList().also { it.removeAt(i) })
-                )
-            }
+            onAdd = { onCostSlot(slot(null, null)) },
+            onEdit = { onCostSlot(slot(null, it)) },
+            onRemove = { onChange(clause.copy(costs = clause.costs.removedAt(it))) }
         )
 
         LimitList(
@@ -344,77 +361,137 @@ private fun ClauseEditor(
             master = master,
             label = "この効果だけの【制限】",
             cardWide = false,
-            onAdd = onAddLimit,
-            onRemove = { i ->
-                onChange(
-                    clause.copy(limits = clause.limits.toMutableList().also { it.removeAt(i) })
-                )
-            }
+            onAdd = { onLimitSlot(slot(null, null)) },
+            onEdit = { onLimitSlot(slot(null, it)) },
+            onRemove = { onChange(clause.copy(limits = clause.limits.removedAt(it))) }
         )
 
-        run {
-            Text(
-                "この効果だけの【発動後】",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Dropdown(
-                label = "",
-                items = AfterActivation.all,
-                selected = clause.afterActivation,
-                itemLabel = { it.label },
-                placeholder = "カード共通の指定に従う"
-            ) { onChange(clause.copy(afterActivation = it)) }
-            if (clause.afterActivation != null) {
-                TextButton(onClick = { onChange(clause.copy(afterActivation = null)) }) {
-                    Text("指定を解除")
-                }
+        Text(
+            "この効果だけの【発動後】",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Dropdown(
+            label = "",
+            items = AfterActivation.all,
+            selected = clause.afterActivation,
+            itemLabel = { it.label },
+            placeholder = "カード共通の指定に従う"
+        ) { onChange(clause.copy(afterActivation = it)) }
+        if (clause.afterActivation != null) {
+            TextButton(onClick = { onChange(clause.copy(afterActivation = null)) }) {
+                Text("指定を解除")
             }
         }
 
         HorizontalDivider()
+        ActionList(
+            actions = clause.actions,
+            master = master,
+            label = "【効果】",
+            onAdd = { onActionSlot(slot(null, null)) },
+            onEdit = { onActionSlot(slot(null, it)) },
+            onRemove = { onChange(clause.copy(actions = clause.actions.removedAt(it))) }
+        )
+
+        // ---- 場合分け ---------------------------------------------------
+        HorizontalDivider()
         Text(
-            "【効果】",
+            "場合分け（●）",
             style = MaterialTheme.typography.labelMedium,
             color = Gold,
             fontWeight = FontWeight.Bold
         )
-        if (clause.actions.isEmpty()) {
-            Text(
-                "まだ効果がありません。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+        Text(
+            "条件ごとに違う処理をしたいときに使います。" +
+                "「送られた場所によって」のような効果が作れます。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        if (clause.branches.isNotEmpty()) {
+            Dropdown(
+                label = "当てはまるものの扱い",
+                items = BranchMode.all,
+                selected = clause.branchMode,
+                itemLabel = { it.label }
+            ) { onChange(clause.copy(branchMode = it)) }
         }
-        clause.actions.forEachIndexed { actionIndex, action ->
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    EffectTextRenderer.actionToText(action, master) + "。",
-                    style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier
-                        .weight(1f)
-                        .clickable { onEditAction(actionIndex) }
-                )
-                IconButton(onClick = {
-                    onChange(
-                        clause.copy(
-                            actions = clause.actions.toMutableList()
-                                .also { it.removeAt(actionIndex) })
+
+        clause.branches.forEachIndexed { branchIndex, branch ->
+            Surface(
+                color = Surface2,
+                shape = MaterialTheme.shapes.small,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    Modifier.padding(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "● ${branchIndex + 1}つ目",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = Gold,
+                            modifier = Modifier.weight(1f)
+                        )
+                        IconButton(onClick = {
+                            onChange(clause.copy(branches = clause.branches.removedAt(branchIndex)))
+                        }) {
+                            Icon(
+                                Icons.Default.Delete,
+                                contentDescription = "この場合分けを削除",
+                                tint = MaterialTheme.colorScheme.error
+                            )
+                        }
+                    }
+
+                    ConditionList(
+                        conditions = branch.conditions,
+                        master = master,
+                        label = "この場合の【条件】",
+                        onAdd = { onConditionSlot(slot(branchIndex, null)) },
+                        onEdit = { onConditionSlot(slot(branchIndex, it)) },
+                        onRemove = { conditionIndex ->
+                            onChange(
+                                clause.copy(
+                                    branches = clause.branches.replacedAt(branchIndex) {
+                                        it.copy(conditions = it.conditions.removedAt(conditionIndex))
+                                    }
+                                )
+                            )
+                        }
                     )
-                }) {
-                    Icon(
-                        Icons.Default.Delete,
-                        contentDescription = "削除",
-                        tint = MaterialTheme.colorScheme.error
+
+                    ActionList(
+                        actions = branch.actions,
+                        master = master,
+                        label = "この場合の【効果】",
+                        onAdd = { onActionSlot(slot(branchIndex, null)) },
+                        onEdit = { onActionSlot(slot(branchIndex, it)) },
+                        onRemove = { actionIndex ->
+                            onChange(
+                                clause.copy(
+                                    branches = clause.branches.replacedAt(branchIndex) {
+                                        it.copy(actions = it.actions.removedAt(actionIndex))
+                                    }
+                                )
+                            )
+                        }
                     )
                 }
             }
         }
-        OutlinedButton(onClick = onAddAction, modifier = Modifier.fillMaxWidth()) {
-            Text("効果の文を追加")
+
+        Chip("＋ 場合分けを追加") {
+            onChange(clause.copy(branches = clause.branches + EffectBranch()))
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// 一覧の部品
+// ---------------------------------------------------------------------------
 
 @Composable
 private fun LocationPicker(
@@ -440,8 +517,7 @@ private fun LocationPicker(
         }
         if (selected.isEmpty()) {
             Text(
-                if (kind == CardKind.MONSTER) "未指定のときはフィールドで発動します。"
-                else "未指定のときは「フィールドで発動」になります。",
+                "未指定のときは「フィールドで発動」になります。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -455,19 +531,17 @@ private fun ConditionList(
     master: MasterData,
     label: String = "【条件】",
     onAdd: () -> Unit,
+    onEdit: (Int) -> Unit,
     onRemove: (Int) -> Unit
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text(
-            label,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        conditions.forEachIndexed { index, condition ->
-            RemovableLine(EffectTextRenderer.conditionToText(condition, master)) { onRemove(index) }
-        }
-        Chip("＋ 条件を追加", onClick = onAdd)
-    }
+    EditableList(
+        label = label,
+        lines = conditions.map { EffectTextRenderer.conditionToText(it, master) },
+        addLabel = "＋ 条件を追加",
+        onAdd = onAdd,
+        onEdit = onEdit,
+        onRemove = onRemove
+    )
 }
 
 @Composable
@@ -476,19 +550,17 @@ private fun CostList(
     master: MasterData,
     label: String = "【コスト】",
     onAdd: () -> Unit,
+    onEdit: (Int) -> Unit,
     onRemove: (Int) -> Unit
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text(
-            label,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        costs.forEachIndexed { index, cost ->
-            RemovableLine(EffectTextRenderer.costToText(cost, master)) { onRemove(index) }
-        }
-        Chip("＋ コストを追加", onClick = onAdd)
-    }
+    EditableList(
+        label = label,
+        lines = costs.map { EffectTextRenderer.costToText(it, master) },
+        addLabel = "＋ コストを追加",
+        onAdd = onAdd,
+        onEdit = onEdit,
+        onRemove = onRemove
+    )
 }
 
 @Composable
@@ -498,6 +570,48 @@ private fun LimitList(
     label: String,
     cardWide: Boolean,
     onAdd: () -> Unit,
+    onEdit: (Int) -> Unit,
+    onRemove: (Int) -> Unit
+) {
+    EditableList(
+        label = label,
+        lines = limits.map { EffectTextRenderer.limitToText(it, master, cardWide) },
+        addLabel = "＋ 制限を追加",
+        onAdd = onAdd,
+        onEdit = onEdit,
+        onRemove = onRemove
+    )
+}
+
+@Composable
+private fun ActionList(
+    actions: List<Action>,
+    master: MasterData,
+    label: String,
+    onAdd: () -> Unit,
+    onEdit: (Int) -> Unit,
+    onRemove: (Int) -> Unit
+) {
+    EditableList(
+        label = label,
+        lines = actions.map { EffectTextRenderer.actionToText(it, master) + "。" },
+        addLabel = "＋ 効果の文を追加",
+        emptyHint = "まだ効果がありません。",
+        onAdd = onAdd,
+        onEdit = onEdit,
+        onRemove = onRemove
+    )
+}
+
+/** タップで編集、ゴミ箱で削除できる一覧。 */
+@Composable
+private fun EditableList(
+    label: String,
+    lines: List<String>,
+    addLabel: String,
+    emptyHint: String? = null,
+    onAdd: () -> Unit,
+    onEdit: (Int) -> Unit,
     onRemove: (Int) -> Unit
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -506,30 +620,41 @@ private fun LimitList(
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
-        limits.forEachIndexed { index, limit ->
-            RemovableLine(EffectTextRenderer.limitToText(limit, master, cardWide)) {
-                onRemove(index)
+        if (lines.isEmpty() && emptyHint != null) {
+            Text(
+                emptyHint,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        lines.forEachIndexed { index, line ->
+            Surface(
+                color = Surface2,
+                shape = MaterialTheme.shapes.small,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    Modifier.padding(start = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        line,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier
+                            .weight(1f)
+                            .clickable { onEdit(index) }
+                            .padding(vertical = 10.dp)
+                    )
+                    IconButton(onClick = { onRemove(index) }) {
+                        Icon(
+                            Icons.Default.Delete,
+                            contentDescription = "削除",
+                            tint = MaterialTheme.colorScheme.error
+                        )
+                    }
+                }
             }
         }
-        Chip("＋ 制限を追加", onClick = onAdd)
-    }
-}
-
-@Composable
-private fun RemovableLine(text: String, onRemove: () -> Unit) {
-    Surface(color = Surface2, shape = MaterialTheme.shapes.small, modifier = Modifier.fillMaxWidth()) {
-        Row(
-            Modifier.padding(start = 10.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(text, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
-            IconButton(onClick = onRemove) {
-                Icon(
-                    Icons.Default.Delete,
-                    contentDescription = "削除",
-                    tint = MaterialTheme.colorScheme.error
-                )
-            }
-        }
+        Chip(addLabel, onClick = onAdd)
     }
 }

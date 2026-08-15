@@ -306,6 +306,7 @@ fun ActionDialog(
 
 private enum class ConditionType(val label: String) {
     EVENT("〜した場合（出来事で発動する）"),
+    SELF_ZONE("このカードが〇〇にある"),
     PHASE("〇〇フェイズである"),
     EXISTS("特定のカードが存在する"),
     LIFE("ライフが一定値である"),
@@ -315,23 +316,78 @@ private enum class ConditionType(val label: String) {
 @Composable
 fun ConditionDialog(
     master: MasterData,
+    initial: Condition? = null,
     onDismiss: () -> Unit,
     onConfirm: (Condition) -> Unit
 ) {
-    var type by remember { mutableStateOf(ConditionType.EVENT) }
-    var scope by remember { mutableStateOf(CardScope(who = PlayerRef.SELF, zone = ZoneType.FIELD)) }
-    var event by remember { mutableStateOf(GameEventType.SUMMONED) }
-    var eventWho by remember { mutableStateOf(PlayerRef.OPPONENT) }
-    var eventSelfOnly by remember { mutableStateOf(false) }
-    var eventFilters by remember { mutableStateOf(listOf<CardFilter>()) }
+    var type by remember {
+        mutableStateOf(
+            when (initial) {
+                is EventCondition -> ConditionType.EVENT
+                is SelfZoneCondition -> ConditionType.SELF_ZONE
+                is PhaseCondition -> ConditionType.PHASE
+                is CardExistsCondition -> ConditionType.EXISTS
+                is LifeCondition -> ConditionType.LIFE
+                is ZoneCountCondition -> ConditionType.ZONE_COUNT
+                null -> ConditionType.EVENT
+            }
+        )
+    }
+    var scope by remember {
+        mutableStateOf(
+            (initial as? CardExistsCondition)?.scope
+                ?: CardScope(who = PlayerRef.SELF, zone = ZoneType.FIELD)
+        )
+    }
+    var event by remember {
+        mutableStateOf((initial as? EventCondition)?.event ?: GameEventType.SUMMONED)
+    }
+    var eventWho by remember {
+        mutableStateOf((initial as? EventCondition)?.who ?: PlayerRef.OPPONENT)
+    }
+    var eventSelfOnly by remember {
+        mutableStateOf((initial as? EventCondition)?.selfOnly ?: false)
+    }
+    var eventFilters by remember {
+        mutableStateOf((initial as? EventCondition)?.filters ?: emptyList())
+    }
     var showEventFilter by remember { mutableStateOf(false) }
-    var atLeast by remember { mutableIntStateOf(1) }
-    var negate by remember { mutableStateOf(false) }
-    var who by remember { mutableStateOf(PlayerRef.SELF) }
-    var cmp by remember { mutableStateOf(Cmp.LE) }
-    var value by remember { mutableIntStateOf(2000) }
-    var zone by remember { mutableStateOf(ZoneType.HAND) }
-    var phases by remember { mutableStateOf(listOf<Phase>()) }
+    var atLeast by remember { mutableIntStateOf((initial as? CardExistsCondition)?.atLeast ?: 1) }
+    var negate by remember { mutableStateOf((initial as? CardExistsCondition)?.negate ?: false) }
+    var who by remember {
+        mutableStateOf(
+            when (initial) {
+                is LifeCondition -> initial.who
+                is ZoneCountCondition -> initial.who
+                else -> PlayerRef.SELF
+            }
+        )
+    }
+    var cmp by remember {
+        mutableStateOf(
+            when (initial) {
+                is LifeCondition -> initial.cmp
+                is ZoneCountCondition -> initial.cmp
+                else -> Cmp.LE
+            }
+        )
+    }
+    var value by remember {
+        mutableIntStateOf(
+            when (initial) {
+                is LifeCondition -> initial.value
+                is ZoneCountCondition -> initial.value
+                else -> 2000
+            }
+        )
+    }
+    var zone by remember {
+        mutableStateOf((initial as? ZoneCountCondition)?.zone ?: ZoneType.HAND)
+    }
+    var phases by remember { mutableStateOf((initial as? PhaseCondition)?.phases ?: emptyList()) }
+    var selfZones by remember {
+        mutableStateOf((initial as? SelfZoneCondition)?.zones ?: emptyList())
+    }
 
     fun build(): Condition = when (type) {
         ConditionType.EVENT -> EventCondition(
@@ -341,6 +397,7 @@ fun ConditionDialog(
             filters = if (eventSelfOnly) emptyList() else eventFilters
         )
 
+        ConditionType.SELF_ZONE -> SelfZoneCondition(selfZones)
         ConditionType.PHASE -> PhaseCondition(phases)
         ConditionType.EXISTS -> CardExistsCondition(scope, atLeast.coerceAtLeast(1), negate)
         ConditionType.LIFE -> LifeCondition(who, cmp, value)
@@ -349,7 +406,7 @@ fun ConditionDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("【条件】を追加") },
+        title = { Text(if (initial == null) "【条件】を追加" else "【条件】を編集") },
         text = {
             Column(
                 Modifier
@@ -399,6 +456,25 @@ fun ConditionDialog(
                                         }
                                     }
                                     Chip("＋ 条件を追加") { showEventFilter = true }
+                                }
+                            }
+                        }
+                    }
+
+                    ConditionType.SELF_ZONE -> {
+                        HorizontalDivider()
+                        Text(
+                            "この効果を持つカード自身がどこにあるかを見ます。" +
+                                "「送られた場所によって」のような場合分けに使います。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        FlowRowSimple {
+                            ZoneType.all.forEach { candidate ->
+                                Chip(candidate.label, selected = candidate in selfZones) {
+                                    selfZones =
+                                        if (candidate in selfZones) selfZones - candidate
+                                        else selfZones + candidate
                                 }
                             }
                         }
@@ -491,16 +567,34 @@ private enum class CostType(val label: String) {
 @Composable
 fun CostDialog(
     master: MasterData,
+    initial: Cost? = null,
     onDismiss: () -> Unit,
     onConfirm: (Cost) -> Unit
 ) {
-    var type by remember { mutableStateOf(CostType.MOVE) }
-    var amount by remember { mutableIntStateOf(500) }
-    var count by remember { mutableIntStateOf(1) }
-    var scope by remember {
-        mutableStateOf(CardScope(who = PlayerRef.SELF, zone = ZoneType.HAND, count = 1))
+    var type by remember {
+        mutableStateOf(
+            when (initial) {
+                is MoveCost -> CostType.MOVE
+                is PayLifeCost -> CostType.PAY_LIFE
+                is DiscardSelfCost ->
+                    if (initial.banish) CostType.SELF_BANISH else CostType.SELF_TO_GRAVE
+
+                is MillCost -> CostType.MILL
+                else -> CostType.MOVE
+            }
+        )
     }
-    var destination by remember { mutableStateOf(MoveDestination.GRAVEYARD) }
+    var amount by remember { mutableIntStateOf((initial as? PayLifeCost)?.amount ?: 500) }
+    var count by remember { mutableIntStateOf((initial as? MillCost)?.count ?: 1) }
+    var scope by remember {
+        mutableStateOf(
+            (initial as? MoveCost)?.scope
+                ?: CardScope(who = PlayerRef.SELF, zone = ZoneType.HAND, count = 1)
+        )
+    }
+    var destination by remember {
+        mutableStateOf((initial as? MoveCost)?.destination ?: MoveDestination.GRAVEYARD)
+    }
 
     fun build(): Cost = when (type) {
         CostType.MOVE -> MoveCost(scope, destination)
@@ -512,7 +606,7 @@ fun CostDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("【コスト】を追加") },
+        title = { Text(if (initial == null) "【コスト】を追加" else "【コスト】を編集") },
         text = {
             Column(
                 Modifier
@@ -581,12 +675,13 @@ fun CostDialog(
 @Composable
 fun LimitDialog(
     master: MasterData,
+    initial: UsageLimit? = null,
     onDismiss: () -> Unit,
     onConfirm: (UsageLimit) -> Unit
 ) {
-    var scope by remember { mutableStateOf(LimitScope.THIS_CARD) }
-    var times by remember { mutableIntStateOf(1) }
-    var categoryId by remember { mutableStateOf<String?>(null) }
+    var scope by remember { mutableStateOf(initial?.scope ?: LimitScope.THIS_CARD) }
+    var times by remember { mutableIntStateOf(initial?.times ?: 1) }
+    var categoryId by remember { mutableStateOf(initial?.categoryId) }
 
     fun build() = UsageLimit(
         scope = scope,
@@ -596,7 +691,7 @@ fun LimitDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("【制限】を追加") },
+        title = { Text(if (initial == null) "【制限】を追加" else "【制限】を編集") },
         text = {
             Column(
                 Modifier

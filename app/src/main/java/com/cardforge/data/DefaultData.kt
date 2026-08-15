@@ -310,6 +310,65 @@ object DefaultData {
                 )
             ),
 
+            // --- 送られた場所で結果が変わるモンスター（場合分け） ---
+            CardDef(
+                id = newId(),
+                name = "残響の巨神",
+                kind = CardKind.MONSTER,
+                level = 10,
+                attributeId = light,
+                raceId = races[18].id,
+                atk = 3000,
+                def = 2800,
+                effect = EffectText(
+                    locations = listOf(
+                        ActivationLocation.GRAVEYARD,
+                        ActivationLocation.BANISHED
+                    ),
+                    clauses = listOf(
+                        EffectClause(
+                            conditions = listOf(
+                                EventCondition(
+                                    event = GameEventType.LEFT_FIELD,
+                                    selfOnly = true
+                                )
+                            ),
+                            mode = ActivationMode.OPTIONAL,
+                            branchMode = BranchMode.FIRST_MATCH,
+                            branches = listOf(
+                                EffectBranch(
+                                    conditions = listOf(
+                                        SelfZoneCondition(listOf(ZoneType.GRAVEYARD))
+                                    ),
+                                    actions = listOf(
+                                        ToHandAction(
+                                            CardScope(
+                                                who = PlayerRef.SELF,
+                                                zone = ZoneType.DECK,
+                                                filters = listOf(
+                                                    KindFilter(CardKind.MONSTER),
+                                                    LevelFilter(Cmp.GE, 10)
+                                                ),
+                                                count = 1,
+                                                selection = SelectionMode.CHOOSE
+                                            )
+                                        )
+                                    )
+                                ),
+                                EffectBranch(
+                                    conditions = listOf(
+                                        SelfZoneCondition(listOf(ZoneType.BANISHED))
+                                    ),
+                                    actions = listOf(
+                                        ToHandAction(CardScope(selfOnly = true))
+                                    )
+                                )
+                            )
+                        )
+                    )
+                )
+            ),
+
             // --- 墓地をデッキに戻してコストにする魔法 ---
             CardDef(
                 id = newId(),

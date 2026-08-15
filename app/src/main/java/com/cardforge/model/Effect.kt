@@ -243,6 +243,14 @@ data class EventCondition(
     val filters: List<CardFilter> = emptyList()
 ) : Condition
 
+/**
+ * この効果を持つカード自身が、指定した領域にある場合。
+ * 「送られた場所によって」のような場合分けに使う。
+ */
+@Serializable
+@SerialName("selfZone")
+data class SelfZoneCondition(val zones: List<ZoneType> = emptyList()) : Condition
+
 /** 指定したフェイズにだけ発動できる。 */
 @Serializable
 @SerialName("phase")
@@ -349,6 +357,16 @@ data class UsageLimit(
 // 効果にのみ適用される。
 // ---------------------------------------------------------------------------
 
+/**
+ * 場合分けの1項目。[conditions] を満たしたときに [actions] を処理する。
+ * カードテキストでは「●条件：効果」として表示される。
+ */
+@Serializable
+data class EffectBranch(
+    val conditions: List<Condition> = emptyList(),
+    val actions: List<Action> = emptyList()
+)
+
 @Serializable
 data class EffectClause(
     val timing: EffectTiming = EffectTiming.ON_ACTIVATE,
@@ -356,6 +374,9 @@ data class EffectClause(
     val conditions: List<Condition> = emptyList(),
     val costs: List<Cost> = emptyList(),
     val actions: List<Action> = emptyList(),
+    /** 場合分け。共通の [actions] を処理したあとに評価する。 */
+    val branches: List<EffectBranch> = emptyList(),
+    val branchMode: BranchMode = BranchMode.FIRST_MATCH,
     /** 任意発動か強制発動か。 */
     val mode: ActivationMode = ActivationMode.OPTIONAL,
     /** この効果だけの制限。 */
@@ -365,6 +386,10 @@ data class EffectClause(
     /** 旧データ互換。制限欄が空でこれが true なら「1ターンに1度」として扱う。 */
     val oncePerTurn: Boolean = false
 )
+
+/** 効果に、処理すべき内容があるか。 */
+val EffectClause.hasWork: Boolean
+    get() = actions.isNotEmpty() || branches.any { it.actions.isNotEmpty() }
 
 @Serializable
 data class EffectText(
@@ -377,7 +402,7 @@ data class EffectText(
     val afterActivation: AfterActivation? = null,
     val clauses: List<EffectClause> = emptyList()
 ) {
-    val isEmpty: Boolean get() = clauses.all { it.actions.isEmpty() }
+    val isEmpty: Boolean get() = clauses.none { it.hasWork }
 
     /** [index] 番目の効果に適用される場所（共通指定を含む）。 */
     fun locationsFor(index: Int): List<ActivationLocation> {
@@ -444,7 +469,7 @@ data class EffectText(
 
     /** そのカードの発動時に処理する効果の番号。 */
     fun onActivationClauses(): List<Int> =
-        clauses.indices.filter { isOnActivation(it) && clauses[it].actions.isNotEmpty() }
+        clauses.indices.filter { isOnActivation(it) && clauses[it].hasWork }
 
     /** 発動時処理か永続の効果があれば、そのカード自体を「発動」できる。 */
     fun supportsCardActivation(): Boolean =

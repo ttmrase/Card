@@ -107,7 +107,8 @@ enum class StatKind(val label: String) {
 enum class ActivationLocation(val label: String) {
     HAND("手札"),
     FIELD("フィールド"),
-    GRAVEYARD("墓地");
+    GRAVEYARD("墓地"),
+    BANISHED("除外ゾーン");
 
     companion object {
         val all: List<ActivationLocation> get() = entries
@@ -179,12 +180,25 @@ enum class GameEventType(val label: String, val isPlayerEvent: Boolean = false) 
     BANISHED("除外された"),
     ACTIVATED("効果を発動した"),
     ATTACK_DECLARED("攻撃宣言した"),
+    LEFT_FIELD("フィールドを離れた"),
     DAMAGE_TAKEN("ダメージを受けた", isPlayerEvent = true),
     LIFE_RECOVERED("ライフを回復した", isPlayerEvent = true),
     CARD_DRAWN("カードをドローした", isPlayerEvent = true);
 
     companion object {
         val all: List<GameEventType> get() = entries
+    }
+}
+
+/** 場合分けの適用のしかた。 */
+@Serializable
+enum class BranchMode(val label: String, val lead: String) {
+    FIRST_MATCH("最初に当てはまるものだけ適用", "以下のうち、最初に当てはまるものを適用する"),
+    ALL_MATCHING("当てはまるものを全て適用", "以下のうち、当てはまるものを全て適用する"),
+    CHOOSE("当てはまるものから1つ選ぶ", "以下のうち、当てはまるものから1つを選んで適用する");
+
+    companion object {
+        val all: List<BranchMode> get() = entries
     }
 }
 
