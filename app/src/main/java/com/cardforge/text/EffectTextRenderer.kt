@@ -149,7 +149,19 @@ object EffectTextRenderer {
     // 条件・コスト
     // -----------------------------------------------------------------------
 
+    /** 「相手の闇属性モンスターが破壊された場合」のようなイベント条件の文。 */
+    fun eventConditionToText(condition: EventCondition, master: MasterData): String {
+        if (condition.selfOnly) return "このカードが${condition.event.label}場合"
+        if (condition.event.isPlayerEvent) {
+            return "${condition.who.label}が${condition.event.label}場合"
+        }
+        val noun = filtersToNoun(condition.filters, master, ZoneType.FIELD)
+        return "${condition.who.label}の${noun}が${condition.event.label}場合"
+    }
+
     fun conditionToText(condition: Condition, master: MasterData): String = when (condition) {
+        is EventCondition -> eventConditionToText(condition, master)
+
         is CardExistsCondition -> {
             val noun = scopeToText(condition.scope, master, withCount = false)
             val counterWord = counter(condition.scope)
@@ -185,6 +197,9 @@ object EffectTextRenderer {
             else "自分の墓地の${filtersToNoun(cost.filters, master)}${cost.count}枚を除外する"
 
         is MillCost -> "自分のデッキの上からカードを${cost.count}枚墓地へ送る"
+
+        is DiscardSelfCost ->
+            if (cost.banish) "このカードを除外する" else "このカードを墓地へ送る"
     }
 
     /** 【制限】の一文。 */
@@ -220,7 +235,7 @@ object EffectTextRenderer {
             lines += "【場所】" + ActivationLocation.FIELD.label
         }
         if (effect.conditions.isNotEmpty()) {
-            lines += "【条件】" + effect.conditions.joinToString("、かつ") {
+            lines += "【条件】" + orderedConditions(effect.conditions).joinToString("、かつ") {
                 conditionToText(it, master)
             }
         }
@@ -232,10 +247,11 @@ object EffectTextRenderer {
                 limitToText(it, master, cardWide = true)
             }
         }
-        if (card.kind != CardKind.MONSTER) {
-            // 記述が省略されている場合は「墓地へ送る」。
-            lines += "【発動後】" + (effect.afterActivation ?: AfterActivation.DEFAULT).label
-        }
+        // 【発動後】は、省略時の既定と違うときだけ明記する。
+        // （魔法・罠は「墓地へ送る」、モンスターは「そのまま残す」が既定）
+        effect.afterActivation
+            ?.takeIf { it != EffectText.defaultAfterActivation(card.kind) }
+            ?.let { lines += "【発動後】" + it.label }
 
         // 各効果。
         effect.clauses.forEachIndexed { index, clause ->
@@ -245,9 +261,10 @@ object EffectTextRenderer {
             if (clause.locations.isNotEmpty()) {
                 sb.append("【場所】" + clause.locations.joinToString("、") { it.label } + " ")
             }
-            if (clause.conditions.isNotEmpty()) {
+            val clauseConditions = orderedConditions(effect.conditionsFor(index) - effect.conditions)
+            if (clauseConditions.isNotEmpty()) {
                 sb.append(
-                    "【条件】" + clause.conditions.joinToString("、かつ") {
+                    "【条件】" + clauseConditions.joinToString("、かつ") {
                         conditionToText(it, master)
                     } + " "
                 )
@@ -257,14 +274,19 @@ object EffectTextRenderer {
                     "【コスト】" + clause.costs.joinToString("、") { costToText(it, master) } + " "
                 )
             }
-            if (clause.afterActivation != null && card.kind != CardKind.MONSTER) {
-                sb.append("【発動後】" + clause.afterActivation.label + " ")
-            }
-            if (card.kind == CardKind.MONSTER && clause.timing != EffectTiming.ON_ACTIVATE) {
-                sb.append(clause.timing.label + "、")
-            }
-
-            sb.append(clause.actions.joinToString("。その後、") { actionToText(it, master) })
+            // 効果番号ごとの【発動後】は、明示されていれば常に書く。
+            clause.afterActivation?.let { sb.append("【発動後】" + it.label + " ") }
+            sb.append(
+                clause.actions.mapIndexed { position, action ->
+                    val text = actionToText(action, master)
+                    // 最後の文だけ「〜できる（任意）／〜する（強制）」を書き分ける。
+                    if (position == clause.actions.lastIndex && effect.isTriggered(index)) {
+                        applyMode(text, clause.mode)
+                    } else {
+                        text
+                    }
+                }.joinToString("。その後、")
+            )
             sb.append("。")
             effect.clauseLimitsFor(index).forEach { limit ->
                 sb.append(limitToText(limit, master, cardWide = false) + "。")
@@ -273,6 +295,25 @@ object EffectTextRenderer {
         }
 
         return lines.joinToString("\n")
+    }
+
+    /** イベント条件を先に読ませる。 */
+    private fun orderedConditions(conditions: List<Condition>): List<Condition> =
+        conditions.filterIsInstance<EventCondition>() +
+            conditions.filterNot { it is EventCondition }
+
+    /** 述語の語尾を、任意発動なら「できる」に置き換える。 */
+    private fun applyMode(text: String, mode: ActivationMode): String {
+        if (mode == ActivationMode.MANDATORY) return text
+        return when {
+            text.endsWith("する") -> text.removeSuffix("する") + "できる"
+            text.endsWith("送る") -> text.removeSuffix("送る") + "送ることができる"
+            text.endsWith("加える") -> text.removeSuffix("加える") + "加えることができる"
+            text.endsWith("戻す") -> text.removeSuffix("戻す") + "戻すことができる"
+            text.endsWith("与える") -> text.removeSuffix("与える") + "与えることができる"
+            text.endsWith("捨てる") -> text.removeSuffix("捨てる") + "捨てさせることができる"
+            else -> "$text ことができる".replace(" ", "")
+        }
     }
 
     /** カード一覧などで使う1行の要約。 */

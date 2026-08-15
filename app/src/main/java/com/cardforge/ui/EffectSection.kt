@@ -90,7 +90,7 @@ fun EffectEditorSection(
                 }
             )
 
-            if (kind != CardKind.MONSTER) {
+            run {
                 HorizontalDivider()
                 Text(
                     "【発動後】",
@@ -100,14 +100,21 @@ fun EffectEditorSection(
                 Dropdown(
                     label = "",
                     items = AfterActivation.all,
-                    selected = effect.afterActivation ?: AfterActivation.DEFAULT,
+                    selected = effect.afterActivation
+                        ?: EffectText.defaultAfterActivation(kind),
                     itemLabel = { it.label }
                 ) { onChange(effect.copy(afterActivation = it)) }
                 Text(
-                    "発動して解決したあと、このカードをどうするか。" +
-                        "通常魔法のように使い切るなら「墓地へ送る」、" +
-                        "永続魔法のように残すなら「フィールドに残す」。" +
-                        "指定しない場合は「墓地へ送る」になります。",
+                    if (kind == CardKind.MONSTER)
+                        "発動して解決したあと、このカードをどうするか。" +
+                            "指定しない場合はそのまま残ります。" +
+                            "手札で発動するモンスターを解決後に墓地へ送りたいなら「墓地へ送る」を選びます" +
+                            "（発動と同時に送りたい場合は【コスト】の「このカードを墓地へ送る」を使います）。"
+                    else
+                        "発動して解決したあと、このカードをどうするか。" +
+                            "通常魔法のように使い切るなら「墓地へ送る」、" +
+                            "永続魔法のように残すなら「そのまま残す」。" +
+                            "指定しない場合は「墓地へ送る」になります。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -147,7 +154,7 @@ fun EffectEditorSection(
             onClick = {
                 onChange(
                     effect.copy(
-                        clauses = effect.clauses + EffectClause(timing = defaultTimingFor(kind))
+                        clauses = effect.clauses + EffectClause()
                     )
                 )
             },
@@ -253,12 +260,7 @@ fun EffectEditorSection(
 
 private const val COMMON = -1
 
-/**
- * 新しい効果の初期タイミング。モンスターは自分のメインフェイズに手動で発動する
- * 起動効果を、魔法・罠は発動時を既定にする。
- */
-fun defaultTimingFor(kind: CardKind): EffectTiming =
-    if (kind == CardKind.MONSTER) EffectTiming.IGNITION else EffectTiming.ON_ACTIVATE
+
 
 @Composable
 private fun ClauseEditor(
@@ -286,14 +288,19 @@ private fun ClauseEditor(
             }
         }
     ) {
-        if (kind == CardKind.MONSTER) {
-            Dropdown(
-                label = "発動タイミング",
-                items = EffectTiming.forMonster,
-                selected = clause.timing,
-                itemLabel = { it.label }
-            ) { onChange(clause.copy(timing = it)) }
-        }
+        Dropdown(
+            label = "発動タイプ",
+            items = ActivationMode.all,
+            selected = clause.mode,
+            itemLabel = { it.label }
+        ) { onChange(clause.copy(mode = it)) }
+        Text(
+            "【条件】に「〜した場合」を入れると、その出来事で発動する効果になります。" +
+                "任意なら発動するか確認し、強制なら自動で発動します。" +
+                "「〜した場合」を入れない効果は、自分のメインフェイズに手動で発動します。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
 
         LocationPicker(
             kind = kind,
@@ -340,7 +347,7 @@ private fun ClauseEditor(
             }
         )
 
-        if (kind != CardKind.MONSTER) {
+        run {
             Text(
                 "この効果だけの【発動後】",
                 style = MaterialTheme.typography.labelSmall,

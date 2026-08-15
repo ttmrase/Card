@@ -116,13 +116,16 @@ enum class ActivationLocation(val label: String) {
 
 /**
  * 【発動後】発動して解決したあと、そのカードをどうするか。
- * 省略した場合は「墓地へ送る」。通常魔法は墓地へ、永続魔法はフィールドに残す、
- * といった使い分けを想定している。
+ *
+ * 魔法・罠で省略した場合は「墓地へ送る」（通常魔法・通常罠）。
+ * モンスターで省略した場合は「そのまま残す」。
+ * 手札で発動するモンスターは、コストで墓地へ送るのか、効果の解決後に
+ * 墓地へ送るのかをここで区別できる。
  */
 @Serializable
 enum class AfterActivation(val label: String) {
     TO_GRAVE("墓地へ送る"),
-    STAY_ON_FIELD("フィールドに残す"),
+    STAY_ON_FIELD("そのまま残す"),
     BANISH("除外する"),
     TO_HAND("手札に戻す"),
     TO_DECK("デッキに戻す");
@@ -147,7 +150,45 @@ enum class LimitScope(val label: String) {
     }
 }
 
-/** 効果が発動するタイミング。 */
+/**
+ * 【条件】で参照できる出来事。「〜した場合」という書き方を可能にする。
+ */
+@Serializable
+enum class GameEventType(val label: String, val isPlayerEvent: Boolean = false) {
+    SUMMONED("召喚・特殊召喚された"),
+    NORMAL_SUMMONED("召喚された"),
+    SPECIAL_SUMMONED("特殊召喚された"),
+    DESTROYED("破壊された"),
+    SENT_TO_GRAVEYARD("墓地へ送られた"),
+    BANISHED("除外された"),
+    ACTIVATED("効果を発動した"),
+    ATTACK_DECLARED("攻撃宣言した"),
+    DAMAGE_TAKEN("ダメージを受けた", isPlayerEvent = true),
+    LIFE_RECOVERED("ライフを回復した", isPlayerEvent = true),
+    CARD_DRAWN("カードをドローした", isPlayerEvent = true);
+
+    companion object {
+        val all: List<GameEventType> get() = entries
+    }
+}
+
+/** 発動が任意か強制か。 */
+@Serializable
+enum class ActivationMode(val label: String, val suffix: String) {
+    OPTIONAL("発動できる（任意）", "できる"),
+    MANDATORY("発動する（強制）", "する");
+
+    companion object {
+        val all: List<ActivationMode> get() = entries
+    }
+}
+
+/**
+ * 効果が発動するタイミング。
+ *
+ * 旧データ互換のために残している。現在は【条件】のイベント条件
+ * （[GameEventType]）で表現する。
+ */
 @Serializable
 enum class EffectTiming(val label: String) {
     ON_ACTIVATE("発動時"),

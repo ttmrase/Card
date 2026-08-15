@@ -243,6 +243,7 @@ fun ActionDialog(
 // ===========================================================================
 
 private enum class ConditionType(val label: String) {
+    EVENT("〜した場合（出来事で発動する）"),
     EXISTS("特定のカードが存在する"),
     LIFE("ライフが一定値である"),
     ZONE_COUNT("領域の枚数が一定値である")
@@ -254,8 +255,13 @@ fun ConditionDialog(
     onDismiss: () -> Unit,
     onConfirm: (Condition) -> Unit
 ) {
-    var type by remember { mutableStateOf(ConditionType.EXISTS) }
+    var type by remember { mutableStateOf(ConditionType.EVENT) }
     var scope by remember { mutableStateOf(CardScope(who = PlayerRef.SELF, zone = ZoneType.FIELD)) }
+    var event by remember { mutableStateOf(GameEventType.SUMMONED) }
+    var eventWho by remember { mutableStateOf(PlayerRef.OPPONENT) }
+    var eventSelfOnly by remember { mutableStateOf(false) }
+    var eventFilters by remember { mutableStateOf(listOf<CardFilter>()) }
+    var showEventFilter by remember { mutableStateOf(false) }
     var atLeast by remember { mutableIntStateOf(1) }
     var negate by remember { mutableStateOf(false) }
     var who by remember { mutableStateOf(PlayerRef.SELF) }
@@ -264,6 +270,13 @@ fun ConditionDialog(
     var zone by remember { mutableStateOf(ZoneType.HAND) }
 
     fun build(): Condition = when (type) {
+        ConditionType.EVENT -> EventCondition(
+            event = event,
+            who = eventWho,
+            selfOnly = eventSelfOnly,
+            filters = if (eventSelfOnly) emptyList() else eventFilters
+        )
+
         ConditionType.EXISTS -> CardExistsCondition(scope, atLeast.coerceAtLeast(1), negate)
         ConditionType.LIFE -> LifeCondition(who, cmp, value)
         ConditionType.ZONE_COUNT -> ZoneCountCondition(who, zone, cmp, value)
@@ -284,6 +297,48 @@ fun ConditionDialog(
                 ) { type = it }
 
                 when (type) {
+                    ConditionType.EVENT -> {
+                        HorizontalDivider()
+                        Text(
+                            "この条件を付けると、その出来事が起きたときに発動する効果になります。" +
+                                "付けない効果は、自分のメインフェイズに手動で発動する効果です。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Dropdown("出来事", GameEventType.all, event, { it.label }) { event = it }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(
+                                checked = eventSelfOnly,
+                                onCheckedChange = { eventSelfOnly = it }
+                            )
+                            Text("このカード自身が対象のときだけ")
+                        }
+                        if (!eventSelfOnly) {
+                            Dropdown("誰の側の出来事か", PlayerRef.all, eventWho, { it.label }) {
+                                eventWho = it
+                            }
+                            if (!event.isPlayerEvent) {
+                                Text(
+                                    "対象のカードを限定する（任意）",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                FlowRowSimple {
+                                    eventFilters.forEachIndexed { index, filter ->
+                                        Chip(
+                                            filterChipLabel(filter, master) + " ✕",
+                                            selected = true
+                                        ) {
+                                            eventFilters = eventFilters.toMutableList()
+                                                .also { it.removeAt(index) }
+                                        }
+                                    }
+                                    Chip("＋ 条件を追加") { showEventFilter = true }
+                                }
+                            }
+                        }
+                    }
+
                     ConditionType.EXISTS -> {
                         HorizontalDivider()
                         CardScopeEditor(scope, master) { scope = it }
@@ -323,6 +378,17 @@ fun ConditionDialog(
         confirmButton = { TextButton(onClick = { onConfirm(build()) }) { Text("決定") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("キャンセル") } }
     )
+
+    if (showEventFilter) {
+        FilterDialog(
+            master = master,
+            onDismiss = { showEventFilter = false },
+            onConfirm = {
+                eventFilters = eventFilters + it
+                showEventFilter = false
+            }
+        )
+    }
 }
 
 // ===========================================================================
@@ -332,6 +398,8 @@ fun ConditionDialog(
 private enum class CostType(val label: String) {
     PAY_LIFE("ライフを払う"),
     DISCARD("手札を捨てる"),
+    SELF_TO_GRAVE("このカードを墓地へ送る"),
+    SELF_BANISH("このカードを除外する"),
     TRIBUTE("自分のモンスターをリリースする"),
     BANISH_GRAVE("自分の墓地のカードを除外する"),
     MILL("自分のデッキから墓地へ送る")
@@ -351,6 +419,8 @@ fun CostDialog(
 
     fun build(): Cost = when (type) {
         CostType.PAY_LIFE -> PayLifeCost(amount.coerceAtLeast(0))
+        CostType.SELF_TO_GRAVE -> DiscardSelfCost(banish = false)
+        CostType.SELF_BANISH -> DiscardSelfCost(banish = true)
         CostType.DISCARD -> DiscardCost(count.coerceAtLeast(1), filters)
         CostType.TRIBUTE -> TributeCost(count.coerceAtLeast(1), filters)
         CostType.BANISH_GRAVE -> BanishFromGraveCost(count.coerceAtLeast(1), filters)
@@ -369,10 +439,18 @@ fun CostDialog(
             ) {
                 Dropdown("コストの種類", CostType.entries.toList(), type, { it.label }) { type = it }
 
-                if (type == CostType.PAY_LIFE) {
-                    NumberField("支払うライフ", amount) { amount = it }
-                } else {
-                    NumberField("枚数／体数", count) { count = it }
+                when (type) {
+                    CostType.PAY_LIFE -> NumberField("支払うライフ", amount) { amount = it }
+
+                    CostType.SELF_TO_GRAVE, CostType.SELF_BANISH -> Text(
+                        "発動するこのカード自身をコストにします。" +
+                            "手札で発動するモンスターを、発動と同時に墓地へ送りたいときに使います。" +
+                            "効果の解決後に送りたい場合は、コストではなく【発動後】を指定してください。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    else -> NumberField("枚数／体数", count) { count = it }
                 }
 
                 if (type == CostType.DISCARD || type == CostType.TRIBUTE ||

@@ -154,7 +154,7 @@ class GameRulesTest {
     }
 
     @Test
-    fun `traps cannot be activated on the turn they were set`() {
+    fun `traps cannot be activated on the turn they were set`() = runBlocking {
         val (state, engine) = freshGame()
         val player = state.players[0]
         val trap = inst(
@@ -182,7 +182,7 @@ class GameRulesTest {
     }
 
     @Test
-    fun `spells can only be activated on their controllers turn in a main phase`() {
+    fun `spells can only be activated on their controllers turn in a main phase`() = runBlocking {
         val (state, engine) = freshGame()
         val player = state.players[0]
         val spell = inst(
@@ -385,7 +385,7 @@ class GameRulesTest {
     }
 
     @Test
-    fun `traps must be set before use and cannot be played from the hand`() {
+    fun `traps must be set before use and cannot be played from the hand`() = runBlocking {
         val (state, engine) = freshGame()
         val player = state.players[0]
         val trap = inst(
@@ -708,7 +708,7 @@ class GameRulesTest {
     }
 
     @Test
-    fun `a refusal explains itself`() {
+    fun `a refusal explains itself`() = runBlocking {
         val (state, engine) = freshGame()
         val player = state.players[0]
         val spell = inst(
@@ -758,8 +758,278 @@ class GameRulesTest {
         assertEquals(listOf(1), engine.activatableClauses(spell, player))
     }
 
+    // --- イベント条件（「〜した場合」）と任意／強制 ------------------------
+
     @Test
-    fun `losing all life ends the duel`() {
+    fun `an event condition fires when the matching event happens`() = runBlocking {
+        val (state, engine) = freshGame()
+        val me = state.players[0]
+        val opponent = state.players[1]
+
+        // 相手がモンスターを召喚した場合に発動する、手札のモンスター。
+        val handTrap = inst(
+            CardDef(
+                id = newId(), name = "手札誘発", kind = CardKind.MONSTER,
+                level = 2, atk = 800, def = 600,
+                effect = EffectText(
+                    locations = listOf(ActivationLocation.HAND),
+                    costs = listOf(DiscardSelfCost()),
+                    clauses = listOf(
+                        EffectClause(
+                            conditions = listOf(
+                                EventCondition(
+                                    event = GameEventType.SUMMONED,
+                                    who = PlayerRef.OPPONENT,
+                                    filters = listOf(KindFilter(CardKind.MONSTER))
+                                )
+                            ),
+                            mode = ActivationMode.MANDATORY,
+                            actions = listOf(DamageAction(PlayerRef.OPPONENT, 700))
+                        )
+                    )
+                )
+            )
+        )
+        me.hand.add(handTrap)
+
+        // 誘発効果は手動では発動できない。
+        assertFalse(engine.activatableCards(me).any { it === handTrap })
+
+        // 相手のターンに、相手がモンスターを召喚する。
+        state.turnPlayerIndex = 1
+        val summoned = inst(monster("相手モンスター", 4, 1500, 1000))
+        opponent.hand.add(summoned)
+        engine.normalSummon(summoned, opponent, asSet = false)
+
+        assertEquals("イベントで誘発効果が発動する", 8000 - 700, opponent.life)
+        // コストとして墓地へ送られている。
+        assertTrue(me.graveyard.any { it === handTrap })
+        assertFalse(me.hand.any { it === handTrap })
+    }
+
+    @Test
+    fun `an event condition ignores events from the wrong side`() = runBlocking {
+        val (state, engine) = freshGame()
+        val me = state.players[0]
+
+        val watcher = inst(
+            CardDef(
+                id = newId(), name = "見張り", kind = CardKind.MONSTER,
+                level = 2, atk = 800, def = 600,
+                effect = EffectText(
+                    locations = listOf(ActivationLocation.HAND),
+                    clauses = listOf(
+                        EffectClause(
+                            conditions = listOf(
+                                EventCondition(
+                                    event = GameEventType.SUMMONED,
+                                    who = PlayerRef.OPPONENT
+                                )
+                            ),
+                            mode = ActivationMode.MANDATORY,
+                            actions = listOf(DamageAction(PlayerRef.OPPONENT, 500))
+                        )
+                    )
+                )
+            )
+        )
+        me.hand.add(watcher)
+
+        // 自分が召喚しても、相手の召喚を条件にした効果は誘発しない。
+        val own = inst(monster("自分のモンスター", 4, 1500, 1000))
+        me.hand.add(own)
+        engine.normalSummon(own, me, asSet = false)
+        assertEquals(8000, state.players[1].life)
+    }
+
+    @Test
+    fun `a trap set this turn does not fire its triggered effect either`() = runBlocking {
+        val (state, engine) = freshGame()
+        val me = state.players[0]
+        val opponent = state.players[1]
+
+        val trap = inst(
+            CardDef(
+                id = newId(), name = "誘発罠", kind = CardKind.TRAP,
+                effect = EffectText(
+                    clauses = listOf(
+                        EffectClause(
+                            conditions = listOf(
+                                EventCondition(
+                                    event = GameEventType.SUMMONED,
+                                    who = PlayerRef.OPPONENT
+                                )
+                            ),
+                            mode = ActivationMode.MANDATORY,
+                            actions = listOf(DamageAction(PlayerRef.OPPONENT, 500))
+                        )
+                    )
+                )
+            )
+        )
+        me.hand.add(trap)
+        engine.setSpellTrap(trap, me)
+
+        // 伏せたターンは誘発効果も発動しない。
+        state.turnPlayerIndex = 1
+        val first = inst(monster("1体目", 4, 1500, 1000))
+        opponent.hand.add(first)
+        engine.normalSummon(first, opponent, asSet = false)
+        assertEquals(8000, opponent.life)
+
+        // 次のターン以降は発動する。
+        state.turn = 2
+        opponent.normalSummonUsed = false
+        val second = inst(monster("2体目", 4, 1500, 1000))
+        opponent.hand.add(second)
+        engine.normalSummon(second, opponent, asSet = false)
+        assertEquals(8000 - 500, opponent.life)
+    }
+
+    @Test
+    fun `an optional effect asks first and a mandatory one does not`() = runBlocking {
+        var confirmations = 0
+        val declining = object : Interaction {
+            override suspend fun chooseCards(
+                playerIndex: Int, prompt: String,
+                candidates: List<CardInstance>, min: Int, max: Int
+            ) = if (min == 0) emptyList() else candidates.take(maxOf(min, 1).coerceAtMost(max))
+
+            override suspend fun chooseZone(playerIndex: Int, prompt: String, freeZones: List<Int>) =
+                freeZones.firstOrNull()
+
+            override suspend fun confirm(playerIndex: Int, prompt: String): Boolean {
+                confirmations++
+                return false
+            }
+
+            override suspend fun chooseOption(
+                playerIndex: Int, prompt: String, options: List<String>
+            ) = 0
+        }
+        val state = GameState(listOf(PlayerState(0, "A"), PlayerState(1, "B")))
+        state.turnPlayerIndex = 0
+        state.turn = 1
+        state.phase = Phase.MAIN1
+        val engine = GameEngine(state, declining)
+        val me = state.players[0]
+
+        fun burner(mode: ActivationMode) = inst(
+            CardDef(
+                id = newId(), name = "焼き$mode", kind = CardKind.MONSTER,
+                level = 2, atk = 100, def = 100,
+                effect = EffectText(
+                    locations = listOf(ActivationLocation.HAND),
+                    clauses = listOf(
+                        EffectClause(
+                            conditions = listOf(
+                                EventCondition(GameEventType.SUMMONED, who = PlayerRef.SELF)
+                            ),
+                            mode = mode,
+                            actions = listOf(DamageAction(PlayerRef.OPPONENT, 300))
+                        )
+                    )
+                )
+            )
+        )
+        val optional = burner(ActivationMode.OPTIONAL)
+        me.hand.add(optional)
+        val trigger = inst(monster("引き金", 4, 1500, 1000))
+        me.hand.add(trigger)
+        engine.normalSummon(trigger, me, asSet = false)
+
+        assertTrue("任意効果は確認を取る", confirmations > 0)
+        assertEquals("断ったので発動しない", 8000, state.players[1].life)
+
+        // 強制効果は確認せずに発動する。断った任意効果は手札に残るので取り除く。
+        me.hand.removeAll { it === optional }
+        me.normalSummonUsed = false
+        me.activationsThisTurn.clear()
+        me.hand.add(burner(ActivationMode.MANDATORY))
+        val trigger2 = inst(monster("引き金2", 4, 1500, 1000))
+        me.hand.add(trigger2)
+        val before = confirmations
+        engine.normalSummon(trigger2, me, asSet = false)
+        assertEquals("強制効果は確認しない", before, confirmations)
+        assertEquals(8000 - 300, state.players[1].life)
+    }
+
+    // --- 手札誘発のコストと発動後の区別 -----------------------------------
+
+    @Test
+    fun `a self cost sends the card away before the effect resolves`() = runBlocking {
+        val (state, engine) = freshGame()
+        val me = state.players[0]
+        val card = inst(
+            CardDef(
+                id = newId(), name = "コスト型", kind = CardKind.MONSTER,
+                level = 2, atk = 100, def = 100,
+                effect = EffectText(
+                    locations = listOf(ActivationLocation.HAND),
+                    costs = listOf(DiscardSelfCost()),
+                    clauses = listOf(
+                        EffectClause(actions = listOf(RecoverAction(PlayerRef.SELF, 200)))
+                    )
+                )
+            )
+        )
+        me.hand.add(card)
+
+        engine.activateCard(card, me)
+        assertEquals(8200, me.life)
+        assertTrue(me.graveyard.any { it === card })
+    }
+
+    @Test
+    fun `after activation sends a hand monster away once it has resolved`() = runBlocking {
+        val (state, engine) = freshGame()
+        val me = state.players[0]
+        val card = inst(
+            CardDef(
+                id = newId(), name = "発動後型", kind = CardKind.MONSTER,
+                level = 2, atk = 100, def = 100,
+                effect = EffectText(
+                    locations = listOf(ActivationLocation.HAND),
+                    afterActivation = AfterActivation.TO_GRAVE,
+                    clauses = listOf(
+                        EffectClause(actions = listOf(RecoverAction(PlayerRef.SELF, 200)))
+                    )
+                )
+            )
+        )
+        me.hand.add(card)
+
+        engine.activateCard(card, me)
+        assertEquals(8200, me.life)
+        assertTrue(me.graveyard.any { it === card })
+    }
+
+    @Test
+    fun `a monster with no after activation stays where it is`() = runBlocking {
+        val (state, engine) = freshGame()
+        val me = state.players[0]
+        val card = inst(
+            CardDef(
+                id = newId(), name = "居座り", kind = CardKind.MONSTER,
+                level = 4, atk = 1000, def = 1000,
+                effect = EffectText(
+                    clauses = listOf(
+                        EffectClause(actions = listOf(RecoverAction(PlayerRef.SELF, 100)))
+                    )
+                )
+            )
+        )
+        me.monsterZones[0] = card
+
+        engine.activateCard(card, me)
+        assertEquals(8100, me.life)
+        // 【発動後】を省略したモンスターは場に残る。
+        assertTrue(me.monsters.any { it === card })
+        assertTrue(me.graveyard.isEmpty())
+    }
+
+    @Test
+    fun `losing all life ends the duel`() = runBlocking {
         val (state, engine) = freshGame()
         engine.dealDamage(state.players[1], 8000)
         assertTrue(state.finished)
@@ -768,7 +1038,7 @@ class GameRulesTest {
     }
 
     @Test
-    fun `running out of cards to draw loses the duel`() {
+    fun `running out of cards to draw loses the duel`() = runBlocking {
         val (state, engine) = freshGame()
         state.players[0].deck.clear()
         engine.draw(state.players[0], 1)

@@ -157,6 +157,23 @@ data class CardExistsCondition(
 @SerialName("life")
 data class LifeCondition(val who: PlayerRef, val cmp: Cmp, val value: Int) : Condition
 
+/**
+ * 「〜した場合」というイベントの条件。
+ *
+ * この条件を持つ効果は、その出来事が起きたときにだけ発動する誘発効果になる。
+ * 持たない効果は、自分のメインフェイズに手動で発動する起動効果として扱う。
+ */
+@Serializable
+@SerialName("event")
+data class EventCondition(
+    val event: GameEventType,
+    /** 出来事を起こしたカード（またはプレイヤー）の持ち主。 */
+    val who: PlayerRef = PlayerRef.OPPONENT,
+    /** 「このカードが〜した場合」にする。true のとき [who] と [filters] は見ない。 */
+    val selfOnly: Boolean = false,
+    val filters: List<CardFilter> = emptyList()
+) : Condition
+
 @Serializable
 @SerialName("zoneCount")
 data class ZoneCountCondition(
@@ -197,6 +214,14 @@ data class BanishFromGraveCost(
 @SerialName("millCost")
 data class MillCost(val count: Int) : Cost
 
+/**
+ * 発動するこのカード自身をコストにする。
+ * 手札で発動するモンスターを「コストとして墓地へ送る」形にしたいときに使う。
+ */
+@Serializable
+@SerialName("selfCost")
+data class DiscardSelfCost(val banish: Boolean = false) : Cost
+
 // ---------------------------------------------------------------------------
 // 【制限】
 // ---------------------------------------------------------------------------
@@ -230,6 +255,8 @@ data class EffectClause(
     val conditions: List<Condition> = emptyList(),
     val costs: List<Cost> = emptyList(),
     val actions: List<Action> = emptyList(),
+    /** 任意発動か強制発動か。 */
+    val mode: ActivationMode = ActivationMode.OPTIONAL,
     /** この効果だけの制限。 */
     val limits: List<UsageLimit> = emptyList(),
     /** この効果だけの【発動後】。null ならカード共通の指定に従う。 */
@@ -258,7 +285,21 @@ data class EffectText(
     }
 
     fun conditionsFor(index: Int): List<Condition> =
-        conditions + clauses.getOrNull(index)?.conditions.orEmpty()
+        conditions + clauses.getOrNull(index)?.conditions.orEmpty() + legacyTrigger(index)
+
+    /** 旧データの timing を、同じ意味のイベント条件として読み替える。 */
+    private fun legacyTrigger(index: Int): List<Condition> {
+        val clause = clauses.getOrNull(index) ?: return emptyList()
+        if (clause.conditions.any { it is EventCondition }) return emptyList()
+        if (conditions.any { it is EventCondition }) return emptyList()
+        val event = when (clause.timing) {
+            EffectTiming.ON_SUMMON -> GameEventType.SUMMONED
+            EffectTiming.ON_DESTROYED -> GameEventType.DESTROYED
+            EffectTiming.ON_ATTACK -> GameEventType.ATTACK_DECLARED
+            EffectTiming.IGNITION, EffectTiming.ON_ACTIVATE -> return emptyList()
+        }
+        return listOf(EventCondition(event = event, selfOnly = true))
+    }
 
     fun costsFor(index: Int): List<Cost> =
         costs + clauses.getOrNull(index)?.costs.orEmpty()
@@ -271,9 +312,25 @@ data class EffectText(
         else emptyList()
     }
 
-    /** [index] 番目の効果の【発動後】。指定が無ければ既定の「墓地へ送る」。 */
-    fun afterActivationFor(index: Int): AfterActivation =
+    /**
+     * [index] 番目の効果の【発動後】。
+     * 指定が無い場合、魔法・罠は「墓地へ送る」、モンスターは「そのまま残す」。
+     */
+    fun afterActivationFor(index: Int, kind: CardKind): AfterActivation =
         clauses.getOrNull(index)?.afterActivation
             ?: afterActivation
-            ?: AfterActivation.DEFAULT
+            ?: defaultAfterActivation(kind)
+
+    /** [index] 番目の効果が持つイベント条件（誘発条件）。 */
+    fun triggersFor(index: Int): List<EventCondition> =
+        conditionsFor(index).filterIsInstance<EventCondition>()
+
+    /** イベント条件を持つ効果は誘発効果、持たない効果は起動効果。 */
+    fun isTriggered(index: Int): Boolean = triggersFor(index).isNotEmpty()
+
+    companion object {
+        fun defaultAfterActivation(kind: CardKind): AfterActivation =
+            if (kind == CardKind.MONSTER) AfterActivation.STAY_ON_FIELD
+            else AfterActivation.TO_GRAVE
+    }
 }

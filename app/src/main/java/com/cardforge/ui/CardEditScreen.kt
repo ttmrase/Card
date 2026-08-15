@@ -136,7 +136,7 @@ fun CardEditScreen(
                                     text = kind.label,
                                     selected = card.kind == kind,
                                     color = kindColor(kind)
-                                ) { card = card.withKind(kind) }
+                                ) { card = card.copy(kind = kind) }
                             }
                         }
                     }
@@ -318,22 +318,6 @@ fun CardEditScreen(
             confirmButton = { TextButton(onClick = { error = null }) { Text("OK") } }
         )
     }
-}
-
-/**
- * カードの種類を変えたとき、その種類では発動しないタイミングになっている効果を
- * 有効なタイミングに戻す。
- */
-private fun CardDef.withKind(newKind: CardKind): CardDef {
-    val current = effect ?: return copy(kind = newKind)
-    val fallback = defaultTimingFor(newKind)
-    val clauses = current.clauses.map { clause ->
-        val valid =
-            if (newKind == CardKind.MONSTER) clause.timing in EffectTiming.forMonster
-            else clause.timing == EffectTiming.ON_ACTIVATE
-        if (valid) clause else clause.copy(timing = fallback)
-    }
-    return copy(kind = newKind, effect = current.copy(clauses = clauses))
 }
 
 private fun tributeHint(level: Int): String = when {

@@ -94,11 +94,11 @@ class CardTextTest {
         val lines = EffectTextRenderer.render(card, master).lines()
         assertEquals("【場所】手札", lines[0])
         assertEquals("【コスト】ライフを500ポイント払う", lines[1])
-        // 発動後の指定が無い魔法・罠は、既定の「墓地へ送る」が明記される。
-        assertEquals("【発動後】墓地へ送る", lines[2])
-        assertTrue(lines[3].startsWith("①："))
+        // 【発動後】が既定（魔法は墓地へ送る）のときは書かない。
+        assertTrue(lines.none { it.startsWith("【発動後】") })
+        assertTrue(lines[2].startsWith("①："))
         // 番号の直後に書いたコストは、その効果にだけ掛かる。
-        assertTrue(lines[4].startsWith("②：【コスト】手札を1枚捨てる"))
+        assertTrue(lines[3].startsWith("②：【コスト】手札を1枚捨てる"))
     }
 
     @Test
@@ -118,8 +118,85 @@ class CardTextTest {
         )
         val text = EffectTextRenderer.render(card, master)
         assertTrue(text.contains("【制限】このカードは1ターンに1度しか発動できない"))
-        assertTrue(text.contains("【発動後】フィールドに残す"))
+        assertTrue(text.contains("【発動後】そのまま残す"))
         assertTrue(text.contains("同名カードを含めて1ターンに2度まで発動できる"))
+    }
+
+    @Test
+    fun `a monster effect uses the same bracket format as spells`() {
+        val card = CardDef(
+            id = "x", name = "誘発モンスター", kind = CardKind.MONSTER,
+            level = 4, atk = 1000, def = 1000,
+            effect = EffectText(
+                clauses = listOf(
+                    EffectClause(
+                        conditions = listOf(
+                            EventCondition(GameEventType.DESTROYED, selfOnly = true)
+                        ),
+                        mode = ActivationMode.MANDATORY,
+                        actions = listOf(DamageAction(PlayerRef.OPPONENT, 800))
+                    )
+                )
+            )
+        )
+        val text = EffectTextRenderer.render(card, master)
+        assertEquals(
+            "①：【条件】このカードが破壊された場合 相手に800ポイントのダメージを与える。",
+            text
+        )
+        // モンスターの既定の【発動後】は「そのまま残す」なので書かれない。
+        assertTrue(!text.contains("【発動後】"))
+    }
+
+    @Test
+    fun `optional effects read as can activate and mandatory ones do not`() {
+        fun card(mode: ActivationMode) = CardDef(
+            id = "x", name = "テスト", kind = CardKind.MONSTER,
+            effect = EffectText(
+                clauses = listOf(
+                    EffectClause(
+                        conditions = listOf(
+                            EventCondition(GameEventType.SUMMONED, selfOnly = true)
+                        ),
+                        mode = mode,
+                        actions = listOf(DrawAction(PlayerRef.SELF, 1))
+                    )
+                )
+            )
+        )
+        assertTrue(
+            EffectTextRenderer.render(card(ActivationMode.OPTIONAL), master)
+                .endsWith("ドローできる。")
+        )
+        assertTrue(
+            EffectTextRenderer.render(card(ActivationMode.MANDATORY), master)
+                .endsWith("ドローする。")
+        )
+    }
+
+    @Test
+    fun `event conditions name the owner and the card`() {
+        val condition = EventCondition(
+            event = GameEventType.SPECIAL_SUMMONED,
+            who = PlayerRef.OPPONENT,
+            filters = listOf(AttributeFilter("attr-dark"), KindFilter(CardKind.MONSTER))
+        )
+        assertEquals(
+            "相手の闇属性モンスターが特殊召喚された場合",
+            EffectTextRenderer.conditionToText(condition, master)
+        )
+    }
+
+    @Test
+    fun `a self cost reads as sending this card away`() {
+        assertEquals(
+            "このカードを墓地へ送る",
+            EffectTextRenderer.costToText(DiscardSelfCost(), master)
+        )
+        assertEquals(
+            "このカードを除外する",
+            EffectTextRenderer.costToText(DiscardSelfCost(banish = true), master)
+        )
     }
 
     @Test

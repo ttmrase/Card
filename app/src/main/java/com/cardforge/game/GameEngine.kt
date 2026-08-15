@@ -6,6 +6,17 @@ import kotlin.math.min
 data class CardLocation(val player: PlayerState, val zone: ZoneType, val index: Int)
 
 /**
+ * 盤面で起きた出来事。【条件】のイベント条件（「〜した場合」）の判定に使う。
+ * [card] はその出来事の対象になったカード、[playerIndex] はその持ち主
+ * （プレイヤーに対する出来事ならそのプレイヤー）。
+ */
+data class GameEvent(
+    val type: GameEventType,
+    val playerIndex: Int,
+    val card: CardInstance? = null
+)
+
+/**
  * デュエルのルール処理と効果解決を行うエンジン。
  *
  * プレイヤーへの問い合わせは全て [Interaction] 経由なので、同じコードで
@@ -18,6 +29,7 @@ class GameEngine(
 
     /** 効果が効果を呼ぶ連鎖の暴走を防ぐための深さ制限。 */
     private var triggerDepth = 0
+    private val MAX_TRIGGER_DEPTH = 4
     private var responseDepth = 0
 
     private fun log(message: String) = state.addLog(message)
@@ -138,7 +150,12 @@ class GameEngine(
         val wasOnField = loc.zone == ZoneType.MONSTER_ZONE || loc.zone == ZoneType.SPELL_TRAP_ZONE
         log("${loc.player.name}の「${inst.card.name}」は破壊された。")
         sendToGraveyard(inst)
-        if (wasOnField) triggerOnDestroyed(inst, loc.player)
+        if (wasOnField) {
+            emit(
+                GameEvent(GameEventType.DESTROYED, loc.player.index, inst),
+                GameEvent(GameEventType.SENT_TO_GRAVEYARD, loc.player.index, inst)
+            )
+        }
     }
 
     // =======================================================================
@@ -222,9 +239,22 @@ class GameEngine(
     // 条件とコスト
     // =======================================================================
 
-    fun conditionsMet(conditions: List<Condition>, controller: PlayerState): Boolean =
+    /**
+     * 状態の条件を判定する。イベント条件は [event] が与えられ、かつ一致した
+     * ときだけ満たされる。[event] が null なら誘発効果は発動できない
+     * （＝手動では発動できない）。
+     */
+    fun conditionsMet(
+        conditions: List<Condition>,
+        controller: PlayerState,
+        holder: CardInstance? = null,
+        event: GameEvent? = null
+    ): Boolean =
         conditions.all { condition ->
             when (condition) {
+                is EventCondition -> event != null && holder != null &&
+                    matchesEvent(condition, event, holder, controller)
+
                 is CardExistsCondition -> {
                     val count = candidates(condition.scope, controller).size
                     if (condition.negate) count == 0 else count >= condition.atLeast
@@ -239,6 +269,27 @@ class GameEngine(
                 }
             }
         }
+
+    private fun matchesEvent(
+        condition: EventCondition,
+        event: GameEvent,
+        holder: CardInstance,
+        controller: PlayerState
+    ): Boolean {
+        if (condition.event != event.type) return false
+        if (condition.selfOnly) return event.card === holder
+
+        val ownerMatches = when (condition.who) {
+            PlayerRef.SELF -> event.playerIndex == controller.index
+            PlayerRef.OPPONENT -> event.playerIndex != controller.index
+            PlayerRef.BOTH -> true
+        }
+        if (!ownerMatches) return false
+        if (condition.event.isPlayerEvent) return true
+
+        val card = event.card ?: return false
+        return matchesAll(card, condition.filters)
+    }
 
     fun canPayCosts(
         costs: List<Cost>,
@@ -257,6 +308,8 @@ class GameEngine(
                 controller.graveyard.count { matchesAll(it, cost.filters) } >= cost.count
 
             is MillCost -> controller.deck.size >= cost.count
+
+            is DiscardSelfCost -> excluding != null
         }
     }
 
@@ -313,6 +366,17 @@ class GameEngine(
                     }
                     log("${controller.name}はデッキの上から${cost.count}枚を墓地へ送った。")
                 }
+
+                is DiscardSelfCost -> {
+                    val self = excluding ?: return false
+                    if (cost.banish) {
+                        banish(self)
+                        log("${controller.name}はコストとして「${self.card.name}」を除外した。")
+                    } else {
+                        sendToGraveyard(self)
+                        log("${controller.name}はコストとして「${self.card.name}」を墓地へ送った。")
+                    }
+                }
             }
         }
         return true
@@ -322,24 +386,27 @@ class GameEngine(
     // ライフとドロー
     // =======================================================================
 
-    fun dealDamage(player: PlayerState, amount: Int) {
+    suspend fun dealDamage(player: PlayerState, amount: Int) {
         if (amount <= 0) return
         player.life -= amount
         log("${player.name}は${amount}ダメージを受けた。（残り${player.life.coerceAtLeast(0)}）")
         if (player.life <= 0) {
             player.life = 0
             finish(state.opponentOf(player).index, "${player.name}のライフが0になった")
+            return
         }
+        emit(GameEvent(GameEventType.DAMAGE_TAKEN, player.index))
     }
 
-    fun recoverLife(player: PlayerState, amount: Int) {
+    suspend fun recoverLife(player: PlayerState, amount: Int) {
         if (amount <= 0) return
         player.life += amount
         log("${player.name}はライフを${amount}回復した。（${player.life}）")
+        emit(GameEvent(GameEventType.LIFE_RECOVERED, player.index))
     }
 
     /** カードをドローする。デッキが尽きていたらそのプレイヤーの負け。 */
-    fun draw(player: PlayerState, count: Int) {
+    suspend fun draw(player: PlayerState, count: Int) {
         repeat(count) {
             if (state.finished) return
             if (player.deck.isEmpty()) {
@@ -349,6 +416,7 @@ class GameEngine(
             player.hand.add(player.deck.removeAt(0))
         }
         log("${player.name}はカードを${count}枚ドローした。")
+        emit(GameEvent(GameEventType.CARD_DRAWN, player.index))
     }
 
     fun finish(winnerIndex: Int?, reason: String) {
@@ -375,8 +443,10 @@ class GameEngine(
             is BanishAction -> {
                 val targets = resolveTargets(action.scope, controller, "除外するカードを選択")
                 targets.forEach {
+                    val owner = locate(it)?.player?.index ?: controller.index
                     log("「${it.card.name}」を除外した。")
                     banish(it)
+                    emit(GameEvent(GameEventType.BANISHED, owner, it))
                 }
                 shuffleIfDeck(action.scope, controller)
             }
@@ -393,8 +463,10 @@ class GameEngine(
             is ToGraveAction -> {
                 val targets = resolveTargets(action.scope, controller, "墓地へ送るカードを選択")
                 targets.forEach {
+                    val owner = locate(it)?.player?.index ?: controller.index
                     log("「${it.card.name}」を墓地へ送った。")
                     sendToGraveyard(it)
+                    emit(GameEvent(GameEventType.SENT_TO_GRAVEYARD, owner, it))
                 }
                 shuffleIfDeck(action.scope, controller)
             }
@@ -424,7 +496,10 @@ class GameEngine(
                     applyPosition(target, action.position)
                     target.summonedOnTurn = state.turn
                     log("${destination.name}は「${target.card.name}」を特殊召喚した。")
-                    triggerOnSummon(target, destination)
+                    emit(
+                        GameEvent(GameEventType.SPECIAL_SUMMONED, destination.index, target),
+                        GameEvent(GameEventType.SUMMONED, destination.index, target)
+                    )
                 }
                 shuffleIfDeck(action.scope, controller)
             }
@@ -540,11 +615,8 @@ class GameEngine(
             val clause = effect.clauses[index]
             if (clause.actions.isEmpty()) return@filter false
 
-            val timingOk = when (inst.card.kind) {
-                CardKind.MONSTER -> clause.timing == EffectTiming.IGNITION
-                else -> clause.timing == EffectTiming.ON_ACTIVATE
-            }
-            if (!timingOk) return@filter false
+            // イベント条件を持つ効果は誘発効果なので、手動では発動できない。
+            if (effect.isTriggered(index)) return@filter false
 
             if (!canActivateFrom(inst, effectiveLocations(effect, index))) return@filter false
             if (!limitsAllow(inst, index, controller)) return@filter false
@@ -556,7 +628,7 @@ class GameEngine(
                 return@filter false
             }
 
-            conditionsMet(effect.conditionsFor(index), controller) &&
+            conditionsMet(effect.conditionsFor(index), controller, inst) &&
                 canPayCosts(effect.costsFor(index), controller, excluding = inst)
         }
     }
@@ -782,6 +854,7 @@ class GameEngine(
         }
 
         recordActivation(inst, clauseIndex, controller)
+        emit(GameEvent(GameEventType.ACTIVATED, controller.index, inst))
 
         // 相手に応答（罠）の機会を与える。
         val negated = offerResponse(controller, "「${inst.card.name}」の発動")
@@ -796,10 +869,8 @@ class GameEngine(
             applyAction(action, controller)
         }
 
-        // 【発動後】の処理。魔法・罠にのみ適用する。
-        if (isSpellOrTrap) {
-            disposeAfterActivation(inst, effect.afterActivationFor(clauseIndex))
-        }
+        // 【発動後】の処理。省略時は魔法・罠なら墓地へ、モンスターならそのまま。
+        disposeAfterActivation(inst, effect.afterActivationFor(clauseIndex, inst.card.kind))
         return true
     }
 
@@ -850,52 +921,77 @@ class GameEngine(
     }
 
     // =======================================================================
-    // 誘発効果
+    // 誘発効果（イベント条件を持つ効果）
     // =======================================================================
 
-    private suspend fun runTriggeredClauses(
-        inst: CardInstance,
-        controller: PlayerState,
-        timing: EffectTiming
-    ) {
-        if (state.finished || triggerDepth >= 4) return
-        val effect = inst.card.effect ?: return
-
-        triggerDepth++
-        try {
-            effect.clauses.forEachIndexed { index, clause ->
-                if (clause.timing != timing || clause.actions.isEmpty()) return@forEachIndexed
-                if (!limitsAllow(inst, index, controller)) return@forEachIndexed
-                if (!conditionsMet(effect.conditionsFor(index), controller)) return@forEachIndexed
-                if (!canPayCosts(effect.costsFor(index), controller, excluding = inst)) {
-                    return@forEachIndexed
-                }
-
-                val label = "「${inst.card.name}」の${EffectNumbers.circled(index)}を発動しますか？"
-                if (!interaction.confirm(controller.index, label)) return@forEachIndexed
-
-                if (!payCosts(effect.costsFor(index), controller, excluding = inst)) {
-                    return@forEachIndexed
-                }
-                recordActivation(inst, index, controller)
-                log("${controller.name}の「${inst.card.name}」の効果が発動。")
-                clause.actions.forEach { action ->
-                    if (!state.finished) applyAction(action, controller)
-                }
+    /**
+     * 出来事を盤面に知らせ、条件が一致した誘発効果を発動させる。
+     *
+     * 任意（発動できる）の効果は確認を取り、強制（発動する）の効果はそのまま
+     * 発動する。効果が効果を呼ぶ連鎖は [triggerDepth] で打ち切る。
+     */
+    private suspend fun emit(vararg events: GameEvent) {
+        for (event in events) {
+            if (state.finished || triggerDepth >= MAX_TRIGGER_DEPTH) return
+            triggerDepth++
+            try {
+                dispatch(event)
+            } finally {
+                triggerDepth--
             }
-        } finally {
-            triggerDepth--
         }
     }
 
-    private suspend fun triggerOnSummon(inst: CardInstance, controller: PlayerState) =
-        runTriggeredClauses(inst, controller, EffectTiming.ON_SUMMON)
+    private suspend fun dispatch(event: GameEvent) {
+        // ターンプレイヤー側から順に見る。解決中に盤面が変わるので控えを取る。
+        val order = listOf(state.turnPlayer, state.nonTurnPlayer)
+        for (player in order) {
+            val candidates = (
+                player.monsters + player.spellsAndTraps + player.hand + player.graveyard
+                ).toList()
 
-    private suspend fun triggerOnDestroyed(inst: CardInstance, controller: PlayerState) =
-        runTriggeredClauses(inst, controller, EffectTiming.ON_DESTROYED)
+            for (inst in candidates) {
+                val effect = inst.card.effect ?: continue
+                for (index in effect.clauses.indices) {
+                    if (state.finished) return
+                    if (!isTriggeredBy(inst, index, player, event)) continue
 
-    private suspend fun triggerOnAttack(inst: CardInstance, controller: PlayerState) =
-        runTriggeredClauses(inst, controller, EffectTiming.ON_ATTACK)
+                    val clause = effect.clauses[index]
+                    if (clause.mode == ActivationMode.OPTIONAL) {
+                        val label = "「${inst.card.name}」の" +
+                            "${EffectNumbers.circled(index)}を発動しますか？"
+                        if (!interaction.confirm(player.index, label)) continue
+                    }
+                    activateClause(inst, index, player)
+                }
+            }
+        }
+    }
+
+    /** [inst] の [index] 番目の効果が、この出来事で発動できる状態かどうか。 */
+    private fun isTriggeredBy(
+        inst: CardInstance,
+        index: Int,
+        controller: PlayerState,
+        event: GameEvent
+    ): Boolean {
+        val effect = inst.card.effect ?: return false
+        val clause = effect.clauses.getOrNull(index) ?: return false
+        if (clause.actions.isEmpty()) return false
+        if (!effect.isTriggered(index)) return false
+        if (!canActivateFrom(inst, effectiveLocations(effect, index))) return false
+
+        // 伏せてあるカードの制約は誘発効果にも掛かる。
+        if (isOnField(inst) && inst.faceDown) {
+            // 罠は伏せた次のターン以降。裏側のモンスターは効果を発動しない。
+            if (inst.card.kind != CardKind.TRAP) return false
+            if (inst.setOnTurn !in 0 until state.turn) return false
+        }
+
+        if (!limitsAllow(inst, index, controller)) return false
+        if (!conditionsMet(effect.conditionsFor(index), controller, inst, event)) return false
+        return canPayCosts(effect.costsFor(index), controller, excluding = inst)
+    }
 
     // =======================================================================
     // 召喚とセット
@@ -968,7 +1064,10 @@ class GameEngine(
             destroy(inst)
             return true
         }
-        triggerOnSummon(inst, controller)
+        emit(
+            GameEvent(GameEventType.NORMAL_SUMMONED, controller.index, inst),
+            GameEvent(GameEventType.SUMMONED, controller.index, inst)
+        )
         return true
     }
 
@@ -1039,7 +1138,7 @@ class GameEngine(
         attacker.hasAttacked = true
         log("${attackingPlayer.name}の「${attacker.card.name}」が攻撃宣言。")
 
-        triggerOnAttack(attacker, attackingPlayer)
+        emit(GameEvent(GameEventType.ATTACK_DECLARED, attackingPlayer.index, attacker))
         if (state.finished) return
 
         if (offerResponse(attackingPlayer, "「${attacker.card.name}」の攻撃")) {
@@ -1134,7 +1233,7 @@ class GameEngine(
         }
     }
 
-    private fun startNextTurn() {
+    private suspend fun startNextTurn() {
         if (state.finished) return
         state.turnPlayerIndex = 1 - state.turnPlayerIndex
         state.turn += 1

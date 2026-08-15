@@ -58,7 +58,13 @@ object DefaultData {
                 effect = EffectText(
                     clauses = listOf(
                         EffectClause(
-                            timing = EffectTiming.ON_SUMMON,
+                            conditions = listOf(
+                                EventCondition(
+                                    event = GameEventType.SUMMONED,
+                                    selfOnly = true
+                                )
+                            ),
+                            mode = ActivationMode.OPTIONAL,
                             limits = listOf(UsageLimit(LimitScope.SAME_NAME, 1)),
                             actions = listOf(
                                 ToHandAction(
@@ -93,7 +99,6 @@ object DefaultData {
                 effect = EffectText(
                     clauses = listOf(
                         EffectClause(
-                            timing = EffectTiming.IGNITION,
                             limits = listOf(UsageLimit(LimitScope.THIS_CARD, 1)),
                             costs = listOf(DiscardCost(1)),
                             conditions = listOf(
@@ -162,7 +167,6 @@ object DefaultData {
                 name = "知識の巻物",
                 kind = CardKind.SPELL,
                 effect = EffectText(
-                    afterActivation = AfterActivation.TO_GRAVE,
                     clauses = listOf(
                         EffectClause(
                             actions = listOf(DrawAction(PlayerRef.SELF, 2))
@@ -230,6 +234,76 @@ object DefaultData {
                 )
             ),
 
+            // --- 手札で発動するモンスター（コストとして墓地へ送る） ---
+            CardDef(
+                id = newId(),
+                name = "警告の妖精",
+                kind = CardKind.MONSTER,
+                level = 2,
+                attributeId = light,
+                raceId = races[18].id,
+                atk = 800,
+                def = 600,
+                flavor = "コストとして墓地へ送るので、効果が無効になっても手札には戻らない。",
+                effect = EffectText(
+                    locations = listOf(ActivationLocation.HAND),
+                    costs = listOf(DiscardSelfCost()),
+                    clauses = listOf(
+                        EffectClause(
+                            conditions = listOf(
+                                EventCondition(
+                                    event = GameEventType.SPECIAL_SUMMONED,
+                                    who = PlayerRef.OPPONENT,
+                                    filters = listOf(KindFilter(CardKind.MONSTER))
+                                )
+                            ),
+                            mode = ActivationMode.OPTIONAL,
+                            limits = listOf(UsageLimit(LimitScope.SAME_NAME, 1)),
+                            actions = listOf(
+                                DestroyAction(
+                                    CardScope(
+                                        who = PlayerRef.OPPONENT,
+                                        zone = ZoneType.MONSTER_ZONE,
+                                        count = 1,
+                                        selection = SelectionMode.CHOOSE
+                                    )
+                                )
+                            )
+                        )
+                    )
+                )
+            ),
+
+            // --- 手札で発動するモンスター（効果の解決後に墓地へ送る） ---
+            CardDef(
+                id = newId(),
+                name = "嘆きの巫子",
+                kind = CardKind.MONSTER,
+                level = 2,
+                attributeId = dark,
+                raceId = caster,
+                atk = 600,
+                def = 800,
+                flavor = "解決してから墓地へ送るので、発動時にはまだ手札にある。",
+                effect = EffectText(
+                    locations = listOf(ActivationLocation.HAND),
+                    afterActivation = AfterActivation.TO_GRAVE,
+                    clauses = listOf(
+                        EffectClause(
+                            conditions = listOf(
+                                EventCondition(
+                                    event = GameEventType.DAMAGE_TAKEN,
+                                    who = PlayerRef.SELF
+                                )
+                            ),
+                            mode = ActivationMode.OPTIONAL,
+                            limits = listOf(UsageLimit(LimitScope.SAME_NAME, 1)),
+                            actions = listOf(RecoverAction(PlayerRef.SELF, 1000))
+                        )
+                    )
+                )
+            ),
+
             // --- 発動後もフィールドに残る永続魔法 ---
             CardDef(
                 id = newId(),
@@ -260,7 +334,13 @@ object DefaultData {
                 effect = EffectText(
                     clauses = listOf(
                         EffectClause(
-                            timing = EffectTiming.ON_DESTROYED,
+                            conditions = listOf(
+                                EventCondition(
+                                    event = GameEventType.DESTROYED,
+                                    selfOnly = true
+                                )
+                            ),
+                            mode = ActivationMode.MANDATORY,
                             actions = listOf(
                                 DamageAction(PlayerRef.OPPONENT, 800)
                             )
