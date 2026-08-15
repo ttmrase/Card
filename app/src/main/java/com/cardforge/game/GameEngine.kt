@@ -231,7 +231,7 @@ class GameEngine(
                 clause.actions
                     .filterIsInstance<ModifyStatAction>()
                     .filter { it.stat == stat && affects(it.scope, source, owner, target) }
-                    .sumOf { it.delta }
+                    .sumOf { resolveValue(it.amountSpec, owner, source) }
             }
         }
 
@@ -362,6 +362,21 @@ class GameEngine(
         }
     }
 
+    /**
+     * 数値の指定を実際の値にする。
+     * 「条件を満たすカードの枚数×100」のような書き方に対応する。
+     */
+    fun resolveValue(
+        spec: ValueSpec,
+        controller: PlayerState,
+        source: CardInstance? = null
+    ): Int = when (spec) {
+        is FixedValue -> spec.value
+        is CountValue ->
+            spec.base + candidates(spec.scope, controller, source, respectProtection = false).size *
+                spec.multiplier
+    }
+
     // =======================================================================
     // 条件とコスト
     // =======================================================================
@@ -390,6 +405,9 @@ class GameEngine(
                 is LifeCondition -> playersFor(condition.who, controller).all {
                     condition.cmp.test(it.life, condition.value)
                 }
+
+                is PhaseCondition ->
+                    condition.phases.isEmpty() || state.phase in condition.phases
 
                 is ZoneCountCondition -> playersFor(condition.who, controller).all {
                     condition.cmp.test(zoneCards(it, condition.zone).size, condition.value)
@@ -637,12 +655,13 @@ class GameEngine(
 
             is ModifyStatAction -> {
                 val targets = resolveTargets(action.scope, controller, "効果の対象を選択", source)
+                val delta = resolveValue(action.amountSpec, controller, source)
                 targets.forEach { target ->
                     when (action.stat) {
-                        StatKind.ATK -> target.atkMod += action.delta
-                        StatKind.DEF -> target.defMod += action.delta
+                        StatKind.ATK -> target.atkMod += delta
+                        StatKind.DEF -> target.defMod += delta
                     }
-                    log("「${target.card.name}」の${action.stat.label}が${action.delta}変化した。")
+                    log("「${target.card.name}」の${action.stat.label}が${delta}変化した。")
                 }
             }
 
@@ -656,11 +675,15 @@ class GameEngine(
 
             is DrawAction -> playersFor(action.who, controller).forEach { draw(it, action.count) }
 
-            is DamageAction ->
-                playersFor(action.who, controller).forEach { dealDamage(it, action.amount) }
+            is DamageAction -> {
+                val amount = resolveValue(action.amountSpec, controller, source)
+                playersFor(action.who, controller).forEach { dealDamage(it, amount) }
+            }
 
-            is RecoverAction ->
-                playersFor(action.who, controller).forEach { recoverLife(it, action.amount) }
+            is RecoverAction -> {
+                val amount = resolveValue(action.amountSpec, controller, source)
+                playersFor(action.who, controller).forEach { recoverLife(it, amount) }
+            }
 
             is DiscardAction -> {
                 for (player in playersFor(action.who, controller)) {
@@ -810,6 +833,7 @@ class GameEngine(
             if (effect.isTriggered(index)) return@filter false
 
             if (!canActivateFrom(inst, effectiveLocations(effect, index))) return@filter false
+            if (!phaseAllows(inst, effect, index, controller)) return@filter false
             if (!limitsAllow(inst, index, controller)) return@filter false
 
             // 手札から場に出して発動するなら、置ける空きが要る。
@@ -822,6 +846,29 @@ class GameEngine(
             conditionsMet(effect.conditionsFor(index), controller, inst) &&
                 canPayCosts(effect.costsFor(index), controller, excluding = inst)
         }
+    }
+
+    /**
+     * いまのフェイズで発動できるか。
+     *
+     * 【条件】でフェイズを指定していればそれに従う。指定が無い場合、
+     * 魔法とモンスターの起動効果はメインフェイズのみ。罠はフェイズを問わない。
+     */
+    private fun phaseAllows(
+        inst: CardInstance,
+        effect: EffectText,
+        index: Int,
+        controller: PlayerState
+    ): Boolean {
+        val phases = effect.phasesFor(index)
+        if (phases.isNotEmpty()) {
+            if (state.phase !in phases) return false
+            // 魔法とモンスターの効果は、フェイズを指定しても自分のターンのまま。
+            if (inst.card.kind != CardKind.TRAP && state.turnPlayer !== controller) return false
+            return true
+        }
+        if (inst.card.kind == CardKind.TRAP) return true
+        return state.phase.isMain && state.turnPlayer === controller
     }
 
     // -----------------------------------------------------------------------
@@ -946,9 +993,8 @@ class GameEngine(
     fun activatableCards(controller: PlayerState): List<CardInstance> {
         val result = mutableListOf<CardInstance>()
         val isOwnTurn = state.turnPlayer === controller
-        val inMainPhase = state.phase == Phase.MAIN1 || state.phase == Phase.MAIN2
 
-        if (isOwnTurn && inMainPhase) {
+        if (isOwnTurn) {
             // 魔法カードは自分のターンのみ。手札からも、伏せた状態からも発動できる。
             result += controller.hand.filter {
                 it.card.kind == CardKind.SPELL && activatableClauses(it, controller).isNotEmpty()
@@ -1013,9 +1059,13 @@ class GameEngine(
         }
 
         val isOwnTurn = state.turnPlayer === controller
-        val inMainPhase = state.phase == Phase.MAIN1 || state.phase == Phase.MAIN2
+        val declaredPhases = effect.clauses.indices
+            .filter { effect.isOnActivation(it) || effect.isContinuous(it) }
+            .flatMap { effect.phasesFor(it) }
+        val phaseOk =
+            if (declaredPhases.isEmpty()) state.phase.isMain else state.phase in declaredPhases
         when (inst.card.kind) {
-            CardKind.SPELL -> if (!isOwnTurn || !inMainPhase) return false
+            CardKind.SPELL -> if (!isOwnTurn || !phaseOk) return false
             CardKind.TRAP ->
                 // 罠は伏せた次のターン以降。
                 if (!inst.faceDown || inst.setOnTurn !in 0 until state.turn) return false
@@ -1538,20 +1588,61 @@ class GameEngine(
     suspend fun advancePhase() {
         if (state.finished) return
         when (state.phase) {
-            Phase.DRAW -> state.phase = Phase.MAIN1
+            Phase.DRAW -> {
+                state.phase = Phase.MAIN1
+                offerPhaseActivations()
+            }
 
             // 最初のターンにバトルフェイズは無い。
-            Phase.MAIN1 -> state.phase = if (state.turn == 1) Phase.MAIN2 else Phase.BATTLE
+            Phase.MAIN1 -> {
+                state.phase = if (state.turn == 1) Phase.MAIN2 else Phase.BATTLE
+                offerPhaseActivations()
+            }
 
-            Phase.BATTLE -> state.phase = Phase.MAIN2
+            Phase.BATTLE -> {
+                state.phase = Phase.MAIN2
+                offerPhaseActivations()
+            }
 
             Phase.MAIN2 -> {
                 state.phase = Phase.END
+                offerPhaseActivations()
                 runEndPhase()
             }
 
             Phase.END -> startNextTurn()
         }
+    }
+
+    /**
+     * そのフェイズを指定した効果があれば、発動するか確認する。
+     *
+     * エンドフェイズのように手が出せないフェイズでも、
+     * 「エンドフェイズに発動できる」効果を使えるようにするための窓口。
+     */
+    private suspend fun offerPhaseActivations() {
+        if (state.finished) return
+        for (player in listOf(state.turnPlayer, state.nonTurnPlayer)) {
+            var guard = 0
+            while (guard++ < 5 && !state.finished) {
+                val candidates = activatableCards(player).filter { declaresCurrentPhase(it) }
+                if (candidates.isEmpty()) break
+
+                val chosen = interaction.chooseCards(
+                    player.index,
+                    "${state.phase.label}に発動できるカードがあります",
+                    candidates, 0, 1
+                )
+                val card = chosen.firstOrNull() ?: break
+                activateCard(card, player)
+            }
+        }
+    }
+
+    /** いまのフェイズを【条件】で名指ししている効果を持つか。 */
+    private fun declaresCurrentPhase(inst: CardInstance): Boolean {
+        val effect = inst.card.effect ?: return false
+        return effect.clauses.indices.any { state.phase in effect.phasesFor(it) }
     }
 
     /** エンドフェイズの手札上限（6枚）処理。 */
@@ -1582,14 +1673,19 @@ class GameEngine(
         val player = state.turnPlayer
         state.phase = Phase.DRAW
         log("── ターン${state.turn}：${player.name}のターン ──")
+        offerPhaseActivations()
         draw(player, 1)
-        if (!state.finished) state.phase = Phase.MAIN1
+        if (!state.finished) {
+            state.phase = Phase.MAIN1
+            offerPhaseActivations()
+        }
     }
 
     /** バトルフェイズを飛ばしてターンを終える。 */
     suspend fun endTurnImmediately() {
         if (state.finished) return
         state.phase = Phase.END
+        offerPhaseActivations()
         runEndPhase()
         startNextTurn()
     }

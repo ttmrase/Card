@@ -154,14 +154,27 @@ class LibraryRepository(private val context: Context) {
         } ?: return null
 
         val scaled = downscale(bitmap)
-        val target = File(imageDir, "${newId()}.jpg")
-        target.outputStream().use { output ->
-            scaled.compress(Bitmap.CompressFormat.JPEG, 85, output)
-        }
+        val path = writeBitmap(scaled)
         if (scaled !== bitmap) scaled.recycle()
         bitmap.recycle()
-        target.absolutePath
+        path
     }.getOrNull()
+
+    /**
+     * 内部ストレージへ保存する。
+     *
+     * 透過のある画像を JPEG にすると透明部分が黒く潰れてしまうので、
+     * その場合は PNG で保存してアルファを残す。
+     */
+    private fun writeBitmap(bitmap: Bitmap): String {
+        val transparent = bitmap.hasAlpha()
+        val target = File(imageDir, "${newId()}." + if (transparent) "png" else "jpg")
+        target.outputStream().use { output ->
+            if (transparent) bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)
+            else bitmap.compress(Bitmap.CompressFormat.JPEG, 85, output)
+        }
+        return target.absolutePath
+    }
 
     /**
      * [sourcePath] の画像を、正規化された矩形（0.0〜1.0）で切り抜いて保存する。
@@ -183,15 +196,12 @@ class LibraryRepository(private val context: Context) {
 
         val cropped = Bitmap.createBitmap(source, x, y, w, h)
         val scaled = downscale(cropped)
-        val target = File(imageDir, "${newId()}.jpg")
-        target.outputStream().use { output ->
-            scaled.compress(Bitmap.CompressFormat.JPEG, 85, output)
-        }
+        val path = writeBitmap(scaled)
         if (scaled !== cropped) scaled.recycle()
         if (cropped !== source) cropped.recycle()
         source.recycle()
         runCatching { File(sourcePath).delete() }
-        target.absolutePath
+        path
     }.getOrNull()
 
     private fun downscale(source: Bitmap): Bitmap {

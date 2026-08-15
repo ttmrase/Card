@@ -3,7 +3,6 @@ package com.cardforge
 import com.cardforge.game.*
 import com.cardforge.model.*
 import com.cardforge.text.EffectTextRenderer
-import com.cardforge.ui.computeCrop
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -225,33 +224,4 @@ class CardActivationTest {
             assertEquals("発動していないので発動時効果は起きない", 8000, me.life)
             assertEquals("永続の効果は働く", 1300, engine.atkOf(ally))
         }
-
-    // --- 切り抜きの計算 ---------------------------------------------------
-
-    @Test
-    fun `no zoom or pan crops the whole image`() {
-        val rect = computeCrop(zoom = 1f, offsetX = 0f, offsetY = 0f, 300f, 400f)
-        assertEquals(0f, rect.left, 0.001f)
-        assertEquals(0f, rect.top, 0.001f)
-        assertEquals(1f, rect.width, 0.001f)
-        assertEquals(1f, rect.height, 0.001f)
-    }
-
-    @Test
-    fun `zooming in keeps the crop inside the image`() {
-        val rect = computeCrop(zoom = 2f, offsetX = 0f, offsetY = 0f, 300f, 400f)
-        assertEquals(0.25f, rect.left, 0.001f)
-        assertEquals(0.25f, rect.top, 0.001f)
-        assertEquals(0.5f, rect.width, 0.001f)
-        assertEquals(0.5f, rect.height, 0.001f)
-    }
-
-    @Test
-    fun `panning far never leaves the image bounds`() {
-        val rect = computeCrop(zoom = 2f, offsetX = -10_000f, offsetY = 10_000f, 300f, 400f)
-        assertTrue(rect.left >= 0f)
-        assertTrue(rect.top >= 0f)
-        assertTrue(rect.left + rect.width <= 1.001f)
-        assertTrue(rect.top + rect.height <= 1.001f)
-    }
 }

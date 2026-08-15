@@ -150,6 +150,22 @@ enum class LimitScope(val label: String) {
     }
 }
 
+/** ターンの進行。【条件】から参照できる。 */
+@Serializable
+enum class Phase(val label: String) {
+    DRAW("ドローフェイズ"),
+    MAIN1("メインフェイズ1"),
+    BATTLE("バトルフェイズ"),
+    MAIN2("メインフェイズ2"),
+    END("エンドフェイズ");
+
+    val isMain: Boolean get() = this == MAIN1 || this == MAIN2
+
+    companion object {
+        val all: List<Phase> get() = entries
+    }
+}
+
 /**
  * 【条件】で参照できる出来事。「〜した場合」という書き方を可能にする。
  */

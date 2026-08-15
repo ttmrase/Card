@@ -11,6 +11,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material3.*
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -280,6 +281,45 @@ fun CardEditScreen(
                     minLines = 2,
                     modifier = Modifier.fillMaxWidth()
                 )
+            }
+
+            // ---- テキストの手直し -------------------------------------
+            SectionCard(title = "効果テキストの手直し（任意）") {
+                Text(
+                    "自動で組み立てた文の助詞などが不自然なときに、表示だけを書き換えられます。" +
+                        "ゲーム中の動作は効果データのままで変わりません。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                if (card.textOverride == null) {
+                    OutlinedButton(
+                        onClick = {
+                            card = card.copy(
+                                textOverride = EffectTextRenderer.renderGenerated(card, master)
+                            )
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("いまの文を読み込んで手直しする") }
+                } else {
+                    OutlinedTextField(
+                        value = card.textOverride.orEmpty(),
+                        onValueChange = { card = card.copy(textOverride = it) },
+                        label = { Text("表示する効果テキスト") },
+                        minLines = 4,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TextButton(onClick = {
+                            card = card.copy(
+                                textOverride = EffectTextRenderer.renderGenerated(card, master)
+                            )
+                        }) { Text("自動生成し直す") }
+                        TextButton(onClick = { card = card.copy(textOverride = null) }) {
+                            Text("手直しをやめる")
+                        }
+                    }
+                }
             }
 
             // ---- プレビュー -------------------------------------------

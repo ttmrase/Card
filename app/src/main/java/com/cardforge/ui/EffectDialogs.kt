@@ -130,8 +130,17 @@ fun ActionDialog(
     var stat by remember {
         mutableStateOf((initial as? ModifyStatAction)?.stat ?: StatKind.ATK)
     }
-    var delta by remember {
-        mutableIntStateOf((initial as? ModifyStatAction)?.delta ?: 500)
+    var statValue by remember {
+        mutableStateOf((initial as? ModifyStatAction)?.amountSpec ?: FixedValue(500))
+    }
+    var amountValue by remember {
+        mutableStateOf(
+            when (initial) {
+                is DamageAction -> initial.amountSpec
+                is RecoverAction -> initial.amountSpec
+                else -> FixedValue(500)
+            }
+        )
     }
     var toBottom by remember {
         mutableStateOf((initial as? ToDeckAction)?.toBottom ?: false)
@@ -150,11 +159,11 @@ fun ActionDialog(
         ActionType.TO_GRAVE -> ToGraveAction(scope)
         ActionType.TO_DECK -> ToDeckAction(scope, toBottom)
         ActionType.SPECIAL_SUMMON -> SpecialSummonAction(scope, position, summonController)
-        ActionType.MODIFY_STAT -> ModifyStatAction(scope, stat, delta)
+        ActionType.MODIFY_STAT -> ModifyStatAction(scope, stat, deltaValue = statValue)
         ActionType.CHANGE_POSITION -> ChangePositionAction(scope, position)
         ActionType.DRAW -> DrawAction(who, amount)
-        ActionType.DAMAGE -> DamageAction(who, amount)
-        ActionType.RECOVER -> RecoverAction(who, amount)
+        ActionType.DAMAGE -> DamageAction(who, amountValue = amountValue)
+        ActionType.RECOVER -> RecoverAction(who, amountValue = amountValue)
         ActionType.DISCARD -> DiscardAction(who, amount, randomDiscard)
         ActionType.MILL -> MillAction(who, amount)
         ActionType.SET_SPELL_TRAP -> SetSpellTrapAction(scope)
@@ -205,7 +214,12 @@ fun ActionDialog(
                     ActionType.MODIFY_STAT -> {
                         HorizontalDivider()
                         Dropdown("対象の数値", StatKind.all, stat, { it.label }) { stat = it }
-                        NumberField("変化量（マイナスで下げる）", delta) { delta = it }
+                        ValueSpecEditor(
+                            label = "変化量",
+                            spec = statValue,
+                            master = master,
+                            allowNegative = true
+                        ) { statValue = it }
                     }
 
                     ActionType.TO_DECK -> Row(verticalAlignment = Alignment.CenterVertically) {
@@ -220,7 +234,7 @@ fun ActionDialog(
 
                     ActionType.DAMAGE, ActionType.RECOVER -> {
                         Dropdown("対象プレイヤー", PlayerRef.all, who, { it.label }) { who = it }
-                        NumberField("ポイント", amount) { amount = it.coerceAtLeast(0) }
+                        ValueSpecEditor("ポイント", amountValue, master) { amountValue = it }
                     }
 
                     ActionType.DISCARD -> {
@@ -292,6 +306,7 @@ fun ActionDialog(
 
 private enum class ConditionType(val label: String) {
     EVENT("〜した場合（出来事で発動する）"),
+    PHASE("〇〇フェイズである"),
     EXISTS("特定のカードが存在する"),
     LIFE("ライフが一定値である"),
     ZONE_COUNT("領域の枚数が一定値である")
@@ -316,6 +331,7 @@ fun ConditionDialog(
     var cmp by remember { mutableStateOf(Cmp.LE) }
     var value by remember { mutableIntStateOf(2000) }
     var zone by remember { mutableStateOf(ZoneType.HAND) }
+    var phases by remember { mutableStateOf(listOf<Phase>()) }
 
     fun build(): Condition = when (type) {
         ConditionType.EVENT -> EventCondition(
@@ -325,6 +341,7 @@ fun ConditionDialog(
             filters = if (eventSelfOnly) emptyList() else eventFilters
         )
 
+        ConditionType.PHASE -> PhaseCondition(phases)
         ConditionType.EXISTS -> CardExistsCondition(scope, atLeast.coerceAtLeast(1), negate)
         ConditionType.LIFE -> LifeCondition(who, cmp, value)
         ConditionType.ZONE_COUNT -> ZoneCountCondition(who, zone, cmp, value)
@@ -382,6 +399,26 @@ fun ConditionDialog(
                                         }
                                     }
                                     Chip("＋ 条件を追加") { showEventFilter = true }
+                                }
+                            }
+                        }
+                    }
+
+                    ConditionType.PHASE -> {
+                        HorizontalDivider()
+                        Text(
+                            "指定したフェイズにだけ発動できるようになります。" +
+                                "エンドフェイズのように操作できないフェイズでも、" +
+                                "そのときに発動するか確認が出ます。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        FlowRowSimple {
+                            Phase.all.forEach { candidate ->
+                                Chip(candidate.label, selected = candidate in phases) {
+                                    phases =
+                                        if (candidate in phases) phases - candidate
+                                        else phases + candidate
                                 }
                             }
                         }

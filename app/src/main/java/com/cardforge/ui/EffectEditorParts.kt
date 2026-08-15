@@ -146,6 +146,8 @@ fun FilterDialog(
 fun CardScopeEditor(
     scope: CardScope,
     master: MasterData,
+    /** 枚数と選び方を出すか。数を数えるだけの用途では不要。 */
+    showCount: Boolean = true,
     onChange: (CardScope) -> Unit
 ) {
     var showFilterDialog by remember { mutableStateOf(false) }
@@ -179,16 +181,18 @@ fun CardScopeEditor(
             ) { onChange(scope.copy(zone = it)) }
         }
 
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.Bottom
-        ) {
-            Dropdown(
-                "選び方", SelectionMode.all, scope.selection, { it.label }, Modifier.weight(1f)
-            ) { onChange(scope.copy(selection = it)) }
-            if (scope.selection != SelectionMode.ALL) {
-                NumberField("枚数／体数", scope.count, Modifier.weight(1f)) {
-                    onChange(scope.copy(count = it.coerceIn(1, 9)))
+        if (showCount) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.Bottom
+            ) {
+                Dropdown(
+                    "選び方", SelectionMode.all, scope.selection, { it.label }, Modifier.weight(1f)
+                ) { onChange(scope.copy(selection = it)) }
+                if (scope.selection != SelectionMode.ALL) {
+                    NumberField("枚数／体数", scope.count, Modifier.weight(1f)) {
+                        onChange(scope.copy(count = it.coerceIn(1, 9)))
+                    }
                 }
             }
         }

@@ -8,14 +8,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import com.cardforge.model.*
 
-enum class Phase(val label: String) {
-    DRAW("ドローフェイズ"),
-    MAIN1("メインフェイズ1"),
-    BATTLE("バトルフェイズ"),
-    MAIN2("メインフェイズ2"),
-    END("エンドフェイズ")
-}
-
 /**
  * デュエル中の1枚のカード。同じ [CardDef] から作られた複数のコピーを
  * 区別するため [uid] を持つ。表示状態やステータス変化はここに載る。

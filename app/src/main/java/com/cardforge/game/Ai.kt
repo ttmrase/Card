@@ -1,6 +1,7 @@
 package com.cardforge.game
 
 import com.cardforge.model.CardKind
+import com.cardforge.model.Phase
 import com.cardforge.model.Position
 
 /** [inst] を持っているプレイヤーの番号。どこにも無ければ null。 */

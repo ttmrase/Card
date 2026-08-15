@@ -43,6 +43,11 @@ data class CardDef(
     val atk: Int = 0,
     val def: Int = 0,
     val flavor: String = "",
+    /**
+     * 自動生成した効果テキストを手直ししたもの。
+     * 設定されているとカードにはこちらが表示される（動作は効果データのまま）。
+     */
+    val textOverride: String? = null,
     /** null または空 = 効果を持たないカード。 */
     val effect: EffectText? = null,
     /** 旧データ互換。読み込み時に永続の効果へ変換される。 */

@@ -63,6 +63,26 @@ data class CardScope(
 )
 
 // ---------------------------------------------------------------------------
+// 数値の指定。固定値のほか「条件を満たすカードの枚数×係数」を書ける。
+// ---------------------------------------------------------------------------
+
+@Serializable
+sealed interface ValueSpec
+
+@Serializable
+@SerialName("fixedValue")
+data class FixedValue(val value: Int = 0) : ValueSpec
+
+/** [base] ＋ [scope] に当てはまるカードの枚数 × [multiplier]。 */
+@Serializable
+@SerialName("countValue")
+data class CountValue(
+    val scope: CardScope = CardScope(selection = SelectionMode.ALL),
+    val multiplier: Int = 100,
+    val base: Int = 0
+) : ValueSpec
+
+// ---------------------------------------------------------------------------
 // 述語: 効果本体。
 // ---------------------------------------------------------------------------
 
@@ -103,8 +123,12 @@ data class SpecialSummonAction(
 data class ModifyStatAction(
     val scope: CardScope,
     val stat: StatKind,
-    val delta: Int
-) : Action
+    val delta: Int = 0,
+    /** 指定があればこちらを使う。無ければ [delta] の固定値。 */
+    val deltaValue: ValueSpec? = null
+) : Action {
+    val amountSpec: ValueSpec get() = deltaValue ?: FixedValue(delta)
+}
 
 @Serializable
 @SerialName("changePosition")
@@ -116,11 +140,23 @@ data class DrawAction(val who: PlayerRef, val count: Int) : Action
 
 @Serializable
 @SerialName("damage")
-data class DamageAction(val who: PlayerRef, val amount: Int) : Action
+data class DamageAction(
+    val who: PlayerRef,
+    val amount: Int = 0,
+    val amountValue: ValueSpec? = null
+) : Action {
+    val amountSpec: ValueSpec get() = amountValue ?: FixedValue(amount)
+}
 
 @Serializable
 @SerialName("recover")
-data class RecoverAction(val who: PlayerRef, val amount: Int) : Action
+data class RecoverAction(
+    val who: PlayerRef,
+    val amount: Int = 0,
+    val amountValue: ValueSpec? = null
+) : Action {
+    val amountSpec: ValueSpec get() = amountValue ?: FixedValue(amount)
+}
 
 @Serializable
 @SerialName("discard")
@@ -206,6 +242,11 @@ data class EventCondition(
     val selfOnly: Boolean = false,
     val filters: List<CardFilter> = emptyList()
 ) : Condition
+
+/** 指定したフェイズにだけ発動できる。 */
+@Serializable
+@SerialName("phase")
+data class PhaseCondition(val phases: List<Phase> = emptyList()) : Condition
 
 @Serializable
 @SerialName("zoneCount")
@@ -353,6 +394,10 @@ data class EffectText(
         clauses.getOrNull(index)?.afterActivation
             ?: afterActivation
             ?: defaultAfterActivation(kind)
+
+    /** [index] 番目の効果が発動できるフェイズ。指定が無ければ空。 */
+    fun phasesFor(index: Int): List<Phase> =
+        conditionsFor(index).filterIsInstance<PhaseCondition>().flatMap { it.phases }
 
     /** [index] 番目の効果が持つイベント条件（誘発条件）。 */
     fun triggersFor(index: Int): List<EventCondition> =

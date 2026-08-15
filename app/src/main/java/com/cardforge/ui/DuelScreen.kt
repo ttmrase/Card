@@ -22,11 +22,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.cardforge.data.LibraryRepository
 import com.cardforge.game.CardInstance
-import com.cardforge.game.Phase
 import com.cardforge.game.PlayerState
 import com.cardforge.game.ownerIndexOf
 import com.cardforge.model.CardKind
 import com.cardforge.model.MasterData
+import com.cardforge.model.Phase
 import com.cardforge.model.Position
 import com.cardforge.text.EffectTextRenderer
 import com.cardforge.ui.theme.*

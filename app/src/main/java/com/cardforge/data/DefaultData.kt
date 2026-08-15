@@ -310,6 +310,58 @@ object DefaultData {
                 )
             ),
 
+            // --- 墓地の数で威力が変わる魔法 ---
+            CardDef(
+                id = newId(),
+                name = "累なる怨嗟",
+                kind = CardKind.SPELL,
+                effect = EffectText(
+                    clauses = listOf(
+                        EffectClause(
+                            actions = listOf(
+                                DamageAction(
+                                    who = PlayerRef.OPPONENT,
+                                    amountValue = CountValue(
+                                        scope = CardScope(
+                                            who = PlayerRef.SELF,
+                                            zone = ZoneType.GRAVEYARD,
+                                            filters = listOf(KindFilter(CardKind.MONSTER)),
+                                            selection = SelectionMode.ALL
+                                        ),
+                                        multiplier = 200
+                                    )
+                                )
+                            )
+                        )
+                    )
+                )
+            ),
+
+            // --- エンドフェイズにだけ発動できる罠 ---
+            CardDef(
+                id = newId(),
+                name = "宵の帰還",
+                kind = CardKind.TRAP,
+                effect = EffectText(
+                    conditions = listOf(PhaseCondition(listOf(Phase.END))),
+                    clauses = listOf(
+                        EffectClause(
+                            actions = listOf(
+                                ToHandAction(
+                                    CardScope(
+                                        who = PlayerRef.SELF,
+                                        zone = ZoneType.GRAVEYARD,
+                                        filters = listOf(KindFilter(CardKind.MONSTER)),
+                                        count = 1,
+                                        selection = SelectionMode.CHOOSE
+                                    )
+                                )
+                            )
+                        )
+                    )
+                )
+            ),
+
             // --- デッキから罠をセットする魔法 ---
             CardDef(
                 id = newId(),

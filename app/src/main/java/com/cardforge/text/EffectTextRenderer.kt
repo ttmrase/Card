@@ -122,9 +122,14 @@ object EffectTextRenderer {
                 "${action.controller.label}のモンスターゾーンに${action.position.label}で特殊召喚する"
 
         is ModifyStatAction -> {
-            val verb = if (action.delta >= 0) "アップする" else "ダウンする"
+            val spec = action.amountSpec
+            val negative = spec is FixedValue && spec.value < 0
+            val verb = if (negative) "ダウンする" else "アップする"
+            val amount =
+                if (spec is FixedValue) kotlin.math.abs(spec.value).toString()
+                else valueToText(spec, master)
             scopeToText(action.scope, master) + selectionParticle(action.scope) +
-                "その${action.stat.label}を${kotlin.math.abs(action.delta)}$verb"
+                "その${action.stat.label}を${amount}$verb"
         }
 
         is ChangePositionAction ->
@@ -133,9 +138,11 @@ object EffectTextRenderer {
 
         is DrawAction -> "${action.who.label}はカードを${action.count}枚ドローする"
 
-        is DamageAction -> "${action.who.label}に${action.amount}ポイントのダメージを与える"
+        is DamageAction ->
+            "${action.who.label}に${valueToText(action.amountSpec, master)}ポイントのダメージを与える"
 
-        is RecoverAction -> "${action.who.label}のライフを${action.amount}ポイント回復する"
+        is RecoverAction ->
+            "${action.who.label}のライフを${valueToText(action.amountSpec, master)}ポイント回復する"
 
         is DiscardAction ->
             "${action.who.label}は手札を${if (action.random) "ランダムに" else ""}${action.count}枚捨てる"
@@ -190,6 +197,10 @@ object EffectTextRenderer {
             }
         }
 
+        is PhaseCondition ->
+            if (condition.phases.isEmpty()) "いつでも"
+            else condition.phases.joinToString("または") { it.label } + "である"
+
         is LifeCondition ->
             "${condition.who.label}のライフが${condition.value}${condition.cmp.label}である"
 
@@ -218,6 +229,19 @@ object EffectTextRenderer {
 
         is DiscardSelfCost ->
             if (cost.banish) "このカードを除外する" else "このカードを墓地へ送る"
+    }
+
+    /** 数値の指定を文にする。「自分の墓地のモンスターの数×100」など。 */
+    fun valueToText(spec: ValueSpec, master: MasterData): String = when (spec) {
+        is FixedValue -> spec.value.toString()
+        is CountValue -> buildString {
+            // 数を数えるだけなので「全ての」は付けずに読ませる。
+            val scope = spec.scope.copy(selection = SelectionMode.CHOOSE)
+            append(scopeToText(scope, master, withCount = false))
+            append("の数×")
+            append(spec.multiplier)
+            if (spec.base != 0) append("＋${spec.base}")
+        }
     }
 
     /** 【制限】の一文。 */
@@ -254,8 +278,17 @@ object EffectTextRenderer {
     // カード全体
     // -----------------------------------------------------------------------
 
-    /** カードの効果テキスト全体を組み立てる。効果を持たない場合は空文字。 */
+    /**
+     * カードの効果テキスト全体を組み立てる。効果を持たない場合は空文字。
+     * 手直ししたテキストがあればそれをそのまま返す。
+     */
     fun render(card: CardDef, master: MasterData): String {
+        card.textOverride?.takeIf { it.isNotBlank() }?.let { return it }
+        return renderGenerated(card, master)
+    }
+
+    /** 手直しを反映しない、データから組み立てただけのテキスト。 */
+    fun renderGenerated(card: CardDef, master: MasterData): String {
         val lines = mutableListOf<String>()
         val effect = card.effect ?: return ""
         if (effect.isEmpty) return ""
@@ -363,10 +396,15 @@ object EffectTextRenderer {
 
         return when (action) {
             is ModifyStatAction -> {
-                val verb = if (action.delta >= 0) "アップする" else "ダウンする"
+                val spec = action.amountSpec
+                val negative = spec is FixedValue && spec.value < 0
+                val verb = if (negative) "ダウンする" else "アップする"
+                val amount =
+                    if (spec is FixedValue) kotlin.math.abs(spec.value).toString()
+                    else valueToText(spec, master)
                 val who = subject(action.scope)
                 val head = if (who.isEmpty()) "その" else "${who}の"
-                "$head${action.stat.label}は${kotlin.math.abs(action.delta)}$verb"
+                "$head${action.stat.label}は${amount}$verb"
             }
 
             is SetSpellTrapAction ->
