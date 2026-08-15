@@ -526,6 +526,11 @@ private fun CardActionDialog(
     val engine = controller.engine
     val inHand = player.hand.any { it === inst }
     val canActivate = engine.activatableCards(player).any { it === inst }
+    val refusal = if (canActivate) null else engine.whyCannotActivate(inst, player)
+    // 【制限】の残り回数。発動できる効果のうち、いちばん余裕のあるものを見せる。
+    val remaining = inst.card.effect?.clauses?.indices
+        ?.mapNotNull { engine.remainingActivations(inst, it, player) }
+        ?.maxOrNull()
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -537,6 +542,21 @@ private fun CardActionDialog(
                     style = MaterialTheme.typography.bodySmall,
                     color = Gold
                 )
+
+                if (remaining != null) {
+                    Text(
+                        "【制限】このターンの残り発動回数: $remaining",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (remaining > 0) Accent else Danger
+                    )
+                }
+                if (refusal != null && inst.card.hasEffect) {
+                    Text(
+                        refusal,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Danger
+                    )
+                }
 
                 if (inHand && inst.card.kind == CardKind.MONSTER) {
                     ActionButton(

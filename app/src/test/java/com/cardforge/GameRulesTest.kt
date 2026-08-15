@@ -542,6 +542,196 @@ class GameRulesTest {
     }
 
     @Test
+    fun `a category limit is not consumed by cards that do not declare it`() = runBlocking {
+        val (state, engine) = freshGame()
+        val player = state.players[0]
+        val categoryId = newId()
+
+        // 制限を書いていない同カテゴリのカード。枠を消費してはいけない。
+        val bystander = inst(
+            CardDef(
+                id = newId(), name = "無制限の仲間", kind = CardKind.SPELL,
+                categoryIds = listOf(categoryId),
+                effect = EffectText(
+                    clauses = listOf(EffectClause(actions = listOf(RecoverAction(PlayerRef.SELF, 100))))
+                )
+            )
+        )
+        val limited = inst(
+            CardDef(
+                id = newId(), name = "制限つき", kind = CardKind.SPELL,
+                categoryIds = listOf(categoryId),
+                effect = EffectText(
+                    limits = listOf(UsageLimit(LimitScope.CATEGORY, 1, categoryId)),
+                    clauses = listOf(EffectClause(actions = listOf(RecoverAction(PlayerRef.SELF, 100))))
+                )
+            )
+        )
+        player.hand.addAll(listOf(bystander, limited))
+
+        engine.activateCard(bystander, player)
+        // 制限を宣言していないカードの発動では枠が減らない。
+        assertEquals(1, engine.remainingActivations(limited, 0, player))
+        assertTrue(engine.activatableClauses(limited, player).isNotEmpty())
+
+        engine.activateCard(limited, player)
+        assertEquals(0, engine.remainingActivations(limited, 0, player))
+    }
+
+    @Test
+    fun `a category limit is shared by every card that declares it`() = runBlocking {
+        val (state, engine) = freshGame()
+        val player = state.players[0]
+        val categoryId = newId()
+
+        fun member(name: String) = inst(
+            CardDef(
+                id = newId(), name = name, kind = CardKind.SPELL,
+                categoryIds = listOf(categoryId),
+                effect = EffectText(
+                    limits = listOf(UsageLimit(LimitScope.CATEGORY, 1, categoryId)),
+                    clauses = listOf(EffectClause(actions = listOf(RecoverAction(PlayerRef.SELF, 100))))
+                )
+            )
+        )
+        val a = member("枠を共有A")
+        val b = member("枠を共有B")
+        player.hand.addAll(listOf(a, b))
+
+        engine.activateCard(a, player)
+        assertEquals(8100, player.life)
+        // 名前は違っても、同じ制限を宣言しているので枠を共有する。
+        assertEquals(0, engine.remainingActivations(b, 0, player))
+        assertTrue(engine.activatableClauses(b, player).isEmpty())
+    }
+
+    @Test
+    fun `a triggered effect does not eat another cards category budget`() = runBlocking {
+        val (state, engine) = freshGame()
+        val player = state.players[0]
+        val categoryId = newId()
+
+        // 特殊召喚され、召喚時効果を持つ同カテゴリのモンスター。
+        val summoned = CardDef(
+            id = newId(), name = "カテゴリのモンスター", kind = CardKind.MONSTER,
+            level = 3, atk = 1000, def = 1000, categoryIds = listOf(categoryId),
+            effect = EffectText(
+                clauses = listOf(
+                    EffectClause(
+                        timing = EffectTiming.ON_SUMMON,
+                        actions = listOf(RecoverAction(PlayerRef.SELF, 100)),
+                        limits = listOf(UsageLimit(LimitScope.SAME_NAME, 1))
+                    )
+                )
+            )
+        )
+        player.deck.add(inst(summoned))
+
+        fun ritual() = inst(
+            CardDef(
+                id = newId(), name = "儀式", kind = CardKind.SPELL,
+                categoryIds = listOf(categoryId),
+                effect = EffectText(
+                    limits = listOf(UsageLimit(LimitScope.CATEGORY, 1, categoryId)),
+                    clauses = listOf(
+                        EffectClause(
+                            actions = listOf(
+                                SpecialSummonAction(
+                                    CardScope(
+                                        who = PlayerRef.SELF,
+                                        zone = ZoneType.DECK,
+                                        filters = listOf(CategoryFilter(categoryId)),
+                                        count = 1
+                                    )
+                                )
+                            )
+                        )
+                    )
+                )
+            )
+        )
+
+        val first = ritual()
+        val second = ritual()
+        player.hand.addAll(listOf(first, second))
+
+        engine.activateCard(first, player)
+        // 召喚時効果も発動したが、それは儀式の枠を消費しない。
+        assertEquals(8100, player.life)
+        // 儀式そのものの枠は使い切っているので、2枚目は発動できない。
+        assertEquals(0, engine.remainingActivations(second, 0, player))
+        assertTrue(engine.activatableClauses(second, player).isEmpty())
+    }
+
+    @Test
+    fun `a failed cost cancels the activation and returns the card to the hand`() = runBlocking {
+        val state = GameState(listOf(PlayerState(0, "A"), PlayerState(1, "B")))
+        state.turnPlayerIndex = 0
+        state.turn = 1
+        state.phase = Phase.MAIN1
+        // コストの選択を拒否する操作者。
+        val refusing = object : Interaction {
+            override suspend fun chooseCards(
+                playerIndex: Int, prompt: String,
+                candidates: List<CardInstance>, min: Int, max: Int
+            ): List<CardInstance> = emptyList()
+
+            override suspend fun chooseZone(playerIndex: Int, prompt: String, freeZones: List<Int>) =
+                freeZones.firstOrNull()
+
+            override suspend fun confirm(playerIndex: Int, prompt: String) = true
+            override suspend fun chooseOption(
+                playerIndex: Int, prompt: String, options: List<String>
+            ) = 0
+        }
+        val engine = GameEngine(state, refusing)
+        val player = state.players[0]
+
+        val spell = inst(
+            CardDef(
+                id = newId(), name = "コスト魔法", kind = CardKind.SPELL,
+                effect = EffectText(
+                    costs = listOf(DiscardCost(1)),
+                    clauses = listOf(EffectClause(actions = listOf(RecoverAction(PlayerRef.SELF, 500))))
+                )
+            )
+        )
+        player.hand.add(spell)
+        player.hand.add(inst(monster("捨て札", 4, 100, 100)))
+
+        engine.activateCard(spell, player)
+        // 発動は成立しないので、墓地には行かず手札に戻り、制限も消費しない。
+        assertTrue(player.hand.any { it === spell })
+        assertTrue(player.graveyard.isEmpty())
+        assertEquals(8000, player.life)
+        assertTrue(player.activationsThisTurn.isEmpty())
+    }
+
+    @Test
+    fun `a refusal explains itself`() {
+        val (state, engine) = freshGame()
+        val player = state.players[0]
+        val spell = inst(
+            CardDef(
+                id = newId(), name = "制限魔法", kind = CardKind.SPELL,
+                effect = EffectText(
+                    afterActivation = AfterActivation.STAY_ON_FIELD,
+                    limits = listOf(UsageLimit(LimitScope.THIS_CARD, 1)),
+                    clauses = listOf(EffectClause(actions = listOf(RecoverAction(PlayerRef.SELF, 100))))
+                )
+            )
+        )
+        player.hand.add(spell)
+        assertEquals(null, engine.whyCannotActivate(spell, player))
+
+        runBlocking { engine.activateCard(spell, player) }
+        assertEquals(
+            "【制限】により、このターンはもう発動できない。",
+            engine.whyCannotActivate(spell, player)
+        )
+    }
+
+    @Test
     fun `a per-effect limit only restricts that numbered effect`() = runBlocking {
         val (state, engine) = freshGame()
         val player = state.players[0]

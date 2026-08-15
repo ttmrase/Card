@@ -58,12 +58,17 @@ class CardInstance(
 /**
  * そのターンに発動した効果の記録。【制限】を同名カードやカテゴリの単位で
  * 数えられるよう、カード本体ではなくプレイヤー側に持たせる。
+ *
+ * [limitKeys] は、この発動が消費した制限の枠。制限は「枠」を共有する
+ * カードどうしでだけ数え合うので、制限を書いていないカードが他のカードの
+ * 枠を勝手に消費することはない。
  */
 data class ActivationRecord(
     val instanceUid: String,
     val cardName: String,
     val categoryIds: List<String>,
-    val clauseIndex: Int
+    val clauseIndex: Int,
+    val limitKeys: List<String> = emptyList()
 )
 
 class PlayerState(

@@ -565,33 +565,54 @@ class GameEngine(
     // 【制限】発動回数
     // -----------------------------------------------------------------------
 
-    /** 効果番号より前の制限はカード全体で、番号ごとの制限はその番号だけで数える。 */
-    fun limitsAllow(inst: CardInstance, clauseIndex: Int, controller: PlayerState): Boolean {
-        val effect = inst.card.effect ?: return true
-        val cardWide = effect.limits.all { limitAllows(it, inst, null, controller) }
-        val perClause = effect.clauseLimitsFor(clauseIndex)
-            .all { limitAllows(it, inst, clauseIndex, controller) }
-        return cardWide && perClause
+    /**
+     * 制限の「枠」を表す文字列。同じ枠を持つ発動どうしが回数を数え合う。
+     *
+     * 効果番号より前に書いた制限はカード全体で1つの枠、番号の直後に書いた
+     * 制限はその番号ごとに別の枠になる。
+     */
+    private fun limitKey(limit: UsageLimit, inst: CardInstance, clauseIndex: Int?): String {
+        val scopePart = when (limit.scope) {
+            LimitScope.THIS_CARD -> "card:${inst.uid}"
+            LimitScope.SAME_NAME -> "name:${inst.card.name}"
+            LimitScope.CATEGORY ->
+                "category:" + (
+                    limit.categoryId
+                        ?: inst.card.categoryIds.sorted().joinToString("+")
+                    )
+        }
+        return if (clauseIndex == null) scopePart else "$scopePart#$clauseIndex"
     }
 
-    private fun limitAllows(
-        limit: UsageLimit,
+    /** この発動が消費する制限の枠と、その上限の一覧。 */
+    private fun applicableLimits(
         inst: CardInstance,
-        clauseIndex: Int?,
-        controller: PlayerState
-    ): Boolean {
-        val used = controller.activationsThisTurn.count { record ->
-            val clauseMatches = clauseIndex == null || record.clauseIndex == clauseIndex
-            clauseMatches && when (limit.scope) {
-                LimitScope.THIS_CARD -> record.instanceUid == inst.uid
-                LimitScope.SAME_NAME -> record.cardName == inst.card.name
-                LimitScope.CATEGORY ->
-                    if (limit.categoryId != null) limit.categoryId in record.categoryIds
-                    else record.categoryIds.any { it in inst.card.categoryIds }
-            }
-        }
-        return used < limit.times.coerceAtLeast(1)
+        clauseIndex: Int
+    ): List<Pair<String, Int>> {
+        val effect = inst.card.effect ?: return emptyList()
+        val cardWide = effect.limits.map { limitKey(it, inst, null) to it.times.coerceAtLeast(1) }
+        val perClause = effect.clauseLimitsFor(clauseIndex)
+            .map { limitKey(it, inst, clauseIndex) to it.times.coerceAtLeast(1) }
+        return cardWide + perClause
     }
+
+    /** 【制限】の残り発動回数。制限が無ければ null。 */
+    fun remainingActivations(
+        inst: CardInstance,
+        clauseIndex: Int,
+        controller: PlayerState
+    ): Int? {
+        val limits = applicableLimits(inst, clauseIndex)
+        if (limits.isEmpty()) return null
+        return limits.minOf { (key, times) ->
+            times - controller.activationsThisTurn.count { key in it.limitKeys }
+        }.coerceAtLeast(0)
+    }
+
+    fun limitsAllow(inst: CardInstance, clauseIndex: Int, controller: PlayerState): Boolean =
+        applicableLimits(inst, clauseIndex).all { (key, times) ->
+            controller.activationsThisTurn.count { key in it.limitKeys } < times
+        }
 
     private fun recordActivation(
         inst: CardInstance,
@@ -603,9 +624,59 @@ class GameEngine(
                 instanceUid = inst.uid,
                 cardName = inst.card.name,
                 categoryIds = inst.card.categoryIds,
-                clauseIndex = clauseIndex
+                clauseIndex = clauseIndex,
+                limitKeys = applicableLimits(inst, clauseIndex).map { it.first }
             )
         )
+    }
+
+    /**
+     * 発動できない理由を日本語で返す。発動できるなら null。
+     * 画面や不具合報告で「なぜ出来ないのか」が分かるようにするためのもの。
+     */
+    fun whyCannotActivate(inst: CardInstance, controller: PlayerState): String? {
+        val effect = inst.card.effect
+        if (effect == null || effect.isEmpty) return "このカードは効果を持っていない。"
+        if (activatableClauses(inst, controller).isNotEmpty()) return null
+
+        val isOwnTurn = state.turnPlayer === controller
+        val inMainPhase = state.phase == Phase.MAIN1 || state.phase == Phase.MAIN2
+
+        if (inst.card.kind == CardKind.SPELL && !isOwnTurn) {
+            return "魔法カードは自分のターンにしか発動できない。"
+        }
+        if (inst.card.kind != CardKind.TRAP && !inMainPhase) {
+            return "メインフェイズにしか発動できない。"
+        }
+        if (inst.card.kind == CardKind.TRAP && locate(inst)?.zone == ZoneType.SPELL_TRAP_ZONE &&
+            inst.setOnTurn >= state.turn
+        ) {
+            return "伏せたターンには発動できない。"
+        }
+
+        val reasons = effect.clauses.indices.mapNotNull { index ->
+            when {
+                effect.clauses[index].actions.isEmpty() -> null
+                !canActivateFrom(inst, effectiveLocations(effect, index)) ->
+                    "この場所からは発動できない。"
+
+                !limitsAllow(inst, index, controller) ->
+                    "【制限】により、このターンはもう発動できない。"
+
+                !conditionsMet(effect.conditionsFor(index), controller) ->
+                    "【条件】を満たしていない。"
+
+                !canPayCosts(effect.costsFor(index), controller, excluding = inst) ->
+                    "【コスト】を支払えない。"
+
+                needsFieldPlacement(inst, effectiveLocations(effect, index)) &&
+                    controller.freeSpellTrapZones().isEmpty() ->
+                    "魔法・罠ゾーンに空きが無い。"
+
+                else -> null
+            }
+        }
+        return reasons.firstOrNull() ?: "今はこのカードを発動できない。"
     }
 
     /** いまこのプレイヤーが発動できるカードを、手札・フィールド・墓地から集める。 */
@@ -657,7 +728,9 @@ class GameEngine(
     suspend fun activateCard(inst: CardInstance, controller: PlayerState): Boolean {
         val clauses = activatableClauses(inst, controller)
         if (clauses.isEmpty()) {
-            interaction.notify(controller.index, "「${inst.card.name}」は今は発動できない。")
+            val reason = whyCannotActivate(inst, controller) ?: "今は発動できない。"
+            log("「${inst.card.name}」は発動できなかった：$reason")
+            interaction.notify(controller.index, "「${inst.card.name}」：$reason")
             return false
         }
 
@@ -695,10 +768,16 @@ class GameEngine(
 
         log("${controller.name}は「${inst.card.name}」の${EffectNumbers.circled(clauseIndex)}を発動。")
 
-        // コストは発動宣言時に支払う。
+        // コストは発動宣言時に支払う。払えなければ発動そのものを取り消す。
         if (!payCosts(effect.costsFor(clauseIndex), controller, excluding = inst)) {
-            log("コストを支払えなかったため発動は不発になった。")
-            if (isSpellOrTrap) disposeAfterActivation(inst, AfterActivation.TO_GRAVE)
+            log("「${inst.card.name}」はコストを支払えなかったため発動を取り消した。")
+            if (placeOnField) {
+                // 手札から出したところだったので手札に戻す。
+                controller.spellTrapZones.indexOfFirst { it === inst }
+                    .takeIf { it >= 0 }
+                    ?.let { controller.spellTrapZones[it] = null }
+                controller.hand.add(inst)
+            }
             return false
         }
 

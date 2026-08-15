@@ -2,6 +2,7 @@ package com.cardforge
 
 import com.cardforge.data.DefaultData
 import com.cardforge.game.*
+import com.cardforge.model.Library
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -46,6 +47,12 @@ class DuelSimulationTest {
                         )
                     }
 
+                    state.players.forEach { player ->
+                        limitViolations(player).forEach { violation ->
+                            throw AssertionError("game $game turn ${state.turn}: $violation")
+                        }
+                    }
+
                     assertTrue(
                         "turn did not advance in game $game (turn ${state.turn})",
                         state.finished || state.turnPlayerIndex != before
@@ -56,6 +63,20 @@ class DuelSimulationTest {
         }
 
         assertTrue("only $concluded of $games duels concluded", concluded == games)
+    }
+
+    /**
+     * 制限の「枠」ごとに、そのターンの発動回数が上限を超えていないか調べる。
+     * 上限そのものは記録側に持たせていないので、同じ枠の記録数だけを数え、
+     * サンプルカードで宣言している上限（いずれも1回）と突き合わせる。
+     */
+    private fun limitViolations(player: PlayerState): List<String> {
+        val counts = mutableMapOf<String, Int>()
+        player.activationsThisTurn.forEach { record ->
+            record.limitKeys.forEach { key -> counts[key] = (counts[key] ?: 0) + 1 }
+        }
+        return counts.filterValues { it > 1 }
+            .map { (key, count) -> "limit pool '$key' used $count times (max 1)" }
     }
 
     private fun bothSidesAi(state: GameState): Interaction = object : Interaction {
