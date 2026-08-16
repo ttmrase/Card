@@ -178,6 +178,7 @@ object IdRemapper {
             action.copy(filters = action.filters.map { remapFilter(it, m) })
 
         is RestrictAction -> action.copy(filters = action.filters.map { remapFilter(it, m) })
+        is PermitAction -> action.copy(filters = action.filters.map { remapFilter(it, m) })
 
         is ModifyStatAction -> action.copy(
             scope = remapScope(action.scope, m),
@@ -304,6 +305,7 @@ object IdRemapper {
             is RevealAction -> collectScope(action.scope, ids)
             is RestrictSummonAction -> collectFilters(action.filters, ids)
             is RestrictAction -> collectFilters(action.filters, ids)
+            is PermitAction -> collectFilters(action.filters, ids)
 
             is MaterialSummonAction -> {
                 collectScope(action.summon, ids)

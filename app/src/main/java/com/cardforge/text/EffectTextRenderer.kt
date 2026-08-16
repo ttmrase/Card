@@ -106,6 +106,12 @@ object EffectTextRenderer {
     /** 「相手フィールドの闇属性モンスター1体」のような、数まで含めた対象表現。 */
     fun scopeToText(scope: CardScope, master: MasterData, withCount: Boolean = true): String {
         if (scope.selfOnly) return "このカード"
+        scope.triggerCard?.let {
+            return when (it) {
+                TriggerCardRef.EVENT_CARD -> "その出来事の対象になったカード"
+                TriggerCardRef.SOURCE_CARD -> "その相手のカード"
+            }
+        }
         val prefix = zonePrefix(scope.who, scope.zoneList)
         val noun = filtersToNoun(scope.filters, master, scope.mainZone)
         if (scope.selection == SelectionMode.ALL) return "${prefix}全ての$noun"
@@ -149,8 +155,8 @@ object EffectTextRenderer {
 
     /** 「を選んで」「をランダムに」など、対象と述語をつなぐ部分。 */
     private fun selectionParticle(scope: CardScope): String {
-        // 「このカード」を指しているときは選ぶ余地が無い。
-        if (scope.selfOnly) return "を"
+        // 「このカード」「そのカード」を指しているときは選ぶ余地が無い。
+        if (scope.selfOnly || scope.triggerCard != null) return "を"
         return selectionParticleFor(scope)
     }
 
@@ -190,6 +196,23 @@ object EffectTextRenderer {
     ): String = kind.template
         .replace("{who}", who)
         .replace("{target}", restrictionTarget(kind, filters, except, master))
+
+    /** 「相手のモンスターは直接攻撃できる」という許可の一文。 */
+    fun permissionSentence(
+        who: String,
+        kind: PermissionKind,
+        filters: List<CardFilter>,
+        except: Boolean,
+        master: MasterData
+    ): String {
+        val target =
+            if (filters.isEmpty()) kind.defaultNoun
+            else {
+                val noun = filtersToNoun(filters, master, ZoneType.MONSTER_ZONE)
+                if (except) "${noun}以外の${kind.defaultNoun}" else noun
+            }
+        return kind.template.replace("{who}", who).replace("{target}", target)
+    }
 
     /** 「このカードを発動するターン、〜できない」という【制限】の文。 */
     fun playLockToText(lock: PlayLock, master: MasterData): String =
@@ -276,6 +299,11 @@ object EffectTextRenderer {
 
     fun actionToText(action: Action, master: MasterData): String = when (action) {
         is GrantEffectAction -> grantEffectToText(action, master)
+
+        is PermitAction ->
+            "${action.duration.label}、" + permissionSentence(
+                action.who.label, action.kind, action.filters, action.except, master
+            )
 
         is RestrictAction ->
             "${action.duration.label}、" + restrictionSentence(
@@ -702,6 +730,10 @@ object EffectTextRenderer {
                 val what = protectionLabel(action)
                 if (who.isEmpty()) what else "${who}は$what"
             }
+
+            is PermitAction -> permissionSentence(
+                action.who.label, action.kind, action.filters, action.except, master
+            )
 
             is RestrictAction -> restrictionSentence(
                 action.who.label, action.kind, action.filters, action.except, master

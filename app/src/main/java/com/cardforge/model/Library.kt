@@ -69,6 +69,10 @@ data class CardDef(
      * 空なら特殊召喚のしかたを問わない。
      */
     val specialSummonOnlyBy: List<CardFilter> = emptyList(),
+    /** このカード自身にずっと掛かる制限。「このカードは攻撃できない」など。 */
+    val selfRestrictions: List<RestrictionKind> = emptyList(),
+    /** このカード自身にずっと付く許可。「相手モンスターがいても直接攻撃できる」など。 */
+    val selfPermissions: List<PermissionKind> = emptyList(),
     /** null または空 = 効果を持たないカード。 */
     val effect: EffectText? = null,
     /** 旧データ互換。読み込み時に永続の効果へ変換される。 */

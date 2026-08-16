@@ -65,6 +65,9 @@ class GameEngine(
         }
     }
 
+    /** いま処理している誘発のきっかけ。対象の指定「そのカード」に使う。 */
+    private var currentTrigger: GameEvent? = null
+
     /**
      * 直前の処理で扱ったカード。
      * 「破壊した数だけ」「同名カードを」のような、前の処理を受けた指定に使う。
@@ -577,6 +580,16 @@ class GameEngine(
         // 「このカード自身」を指しているときは、他の指定を見ない。
         if (scope.selfOnly) return listOfNotNull(source)
 
+        // 誘発のきっかけになったカードを指しているとき。
+        scope.triggerCard?.let { ref ->
+            val event = currentTrigger ?: return emptyList()
+            val picked = when (ref) {
+                TriggerCardRef.EVENT_CARD -> event.card
+                TriggerCardRef.SOURCE_CARD -> event.sourceCard
+            } ?: return emptyList()
+            return listOf(picked).filter { matchesAll(it, scope.filters, source) }
+        }
+
         val hidesInfo = needsCardInfo(scope.filters)
         return playersFor(scope.who, controller)
             .flatMap { player -> scope.zoneList.flatMap { zoneCards(player, it) } }
@@ -774,7 +787,10 @@ class GameEngine(
                 controller.hand.count { it !== excluding && matchesAll(it, cost.filters) } >= cost.count
 
             is TributeCost ->
-                controller.monsters.count { matchesAll(it, cost.filters) } >= cost.count
+                controller.monsters.count {
+                    matchesAll(it, cost.filters) &&
+                        allowed(controller, RestrictionKind.TRIBUTE, it)
+                } >= cost.count
 
             is BanishFromGraveCost ->
                 controller.graveyard.count { matchesAll(it, cost.filters) } >= cost.count
@@ -855,7 +871,10 @@ class GameEngine(
                 }
 
                 is TributeCost -> {
-                    val pool = controller.monsters.filter { matchesAll(it, cost.filters) }
+                    val pool = controller.monsters.filter {
+                        matchesAll(it, cost.filters) &&
+                            allowed(controller, RestrictionKind.TRIBUTE, it)
+                    }
                     val chosen = interaction.chooseCards(
                         controller.index, "コスト：リリースするモンスターを${cost.count}体選択",
                         pool, cost.count, cost.count
@@ -1264,6 +1283,23 @@ class GameEngine(
                 }
                 playersFor(action.who, controller).forEach { player ->
                     addRestriction(player, action.kind, action.filters, action.except, until)
+                }
+            }
+
+            is PermitAction -> {
+                val until = when (action.duration) {
+                    RestrictionDuration.THIS_TURN -> state.turn
+                    RestrictionDuration.NEXT_TURN -> state.turn + 1
+                }
+                playersFor(action.who, controller).forEach { player ->
+                    player.permissions.add(
+                        PlayPermission(action.kind, action.filters, action.except, until)
+                    )
+                    log(
+                        EffectTextRenderer.permissionSentence(
+                            player.name, action.kind, action.filters, action.except, state.master
+                        ) + "。"
+                    )
                 }
             }
 
@@ -2551,6 +2587,16 @@ class GameEngine(
     }
 
     private suspend fun dispatch(event: GameEvent) {
+        val previousTrigger = currentTrigger
+        currentTrigger = event
+        try {
+            dispatchInner(event)
+        } finally {
+            currentTrigger = previousTrigger
+        }
+    }
+
+    private suspend fun dispatchInner(event: GameEvent) {
         // ターンプレイヤー側から順に見る。解決中に盤面が変わるので控えを取る。
         val order = listOf(state.turnPlayer, state.nonTurnPlayer)
         for (player in order) {
@@ -2655,6 +2701,9 @@ class GameEngine(
             return if (except) !matches else matches
         }
 
+        // カード自身にずっと掛かっている制限。
+        if (card != null && card.card.selfRestrictions.any { coversKind(it, kind) }) return false
+
         val stored = player.restrictions.any {
             it.untilTurn >= state.turn && blocks(it.kind, it.filters, it.except)
         }
@@ -2665,6 +2714,36 @@ class GameEngine(
                 clause.actions.filterIsInstance<RestrictAction>().any { action ->
                     playersFor(action.who, owner).any { it === player } &&
                         blocks(action.kind, action.filters, action.except)
+                }
+            }
+        }
+    }
+
+    /** [player] が [kind] の許可を持っているか。 */
+    fun permitted(player: PlayerState, kind: PermissionKind, card: CardInstance?): Boolean {
+        if (card != null && kind in card.card.selfPermissions) return true
+
+        fun grants(
+            permissionKind: PermissionKind,
+            filters: List<CardFilter>,
+            except: Boolean
+        ): Boolean {
+            if (permissionKind != kind) return false
+            if (card == null) return true
+            val matches = matchesAll(card, filters)
+            return if (except) !matches else matches
+        }
+
+        val stored = player.permissions.any {
+            it.untilTurn >= state.turn && grants(it.kind, it.filters, it.except)
+        }
+        if (stored) return true
+
+        return withoutRecursion(false) {
+            activeContinuous().any { (source, owner, clause) ->
+                clause.actions.filterIsInstance<PermitAction>().any { action ->
+                    playersFor(action.who, owner).any { it === player } &&
+                        grants(action.kind, action.filters, action.except)
                 }
             }
         }
@@ -2736,7 +2815,9 @@ class GameEngine(
         if (locate(inst)?.zone != ZoneType.HAND) return false
 
         val need = inst.card.tributesRequired
-        if (controller.monsters.size < need) return false
+        if (controller.monsters.count { allowed(controller, RestrictionKind.TRIBUTE, it) } < need) {
+            return false
+        }
         // リリース後に空くゾーンも数に入れる。
         return controller.freeMonsterZones().size + need > 0
     }
@@ -2757,10 +2838,17 @@ class GameEngine(
 
         val need = inst.card.tributesRequired
         if (need > 0) {
+            val tributable = controller.monsters.filter {
+                allowed(controller, RestrictionKind.TRIBUTE, it)
+            }
+            if (tributable.size < need) {
+                interaction.notify(controller.index, "リリースできるモンスターが足りない。")
+                return false
+            }
             val chosen = interaction.chooseCards(
                 controller.index,
                 "リリースするモンスターを${need}体選択",
-                controller.monsters, need, need
+                tributable, need, need
             )
             if (chosen.size < need) return false
             chosen.forEach {
@@ -2864,10 +2952,41 @@ class GameEngine(
 
     fun canAttackDirectly(): Boolean = !state.nonTurnPlayer.hasMonsters
 
-    /** [inst] が直接攻撃できるか。制限が掛かっていれば false。 */
-    fun canAttackDirectlyWith(inst: CardInstance): Boolean =
-        canAttackDirectly() &&
-            allowed(locate(inst)?.player ?: state.turnPlayer, RestrictionKind.DIRECT_ATTACK, inst)
+    /**
+     * 戦闘ダメージを与える。
+     *
+     * 「戦闘ダメージを与えられない」「戦闘ダメージを受けない」の制限をここで見る。
+     */
+    private suspend fun dealBattleDamage(
+        source: CardInstance,
+        from: PlayerState,
+        to: PlayerState,
+        amount: Int
+    ) {
+        if (amount <= 0) return
+        if (!allowed(from, RestrictionKind.DEAL_BATTLE_DAMAGE, source)) {
+            log("「${source.card.name}」は戦闘ダメージを与えられない。")
+            return
+        }
+        if (!allowed(to, RestrictionKind.TAKE_BATTLE_DAMAGE, source)) {
+            log("${to.name}は戦闘ダメージを受けない。")
+            return
+        }
+        dealDamage(to, amount)
+    }
+
+    /**
+     * [inst] が直接攻撃できるか。
+     *
+     * 相手にモンスターがいても、「相手モンスターがいても直接攻撃できる」の
+     * 許可を持っていれば通す。制限が掛かっていれば false。
+     */
+    fun canAttackDirectlyWith(inst: CardInstance): Boolean {
+        val player = locate(inst)?.player ?: state.turnPlayer
+        if (!allowed(player, RestrictionKind.DIRECT_ATTACK, inst)) return false
+        return canAttackDirectly() ||
+            permitted(player, PermissionKind.DIRECT_ATTACK, inst)
+    }
 
     suspend fun declareAttack(attacker: CardInstance, target: CardInstance?) {
         if (!canAttack(attacker)) return
@@ -2877,7 +2996,14 @@ class GameEngine(
         attacker.hasAttacked = true
         log("${attackingPlayer.name}の「${attacker.card.name}」が攻撃宣言。")
 
-        emit(GameEvent(GameEventType.ATTACK_DECLARED, attackingPlayer.index, attacker))
+        emit(
+            GameEvent(
+                GameEventType.ATTACK_DECLARED,
+                attackingPlayer.index,
+                attacker,
+                sourceCard = target
+            )
+        )
         if (target != null) {
             // 攻撃された側のカードにも知らせる。誰に攻撃されたかも一緒に渡す。
             emit(
@@ -2900,16 +3026,18 @@ class GameEngine(
         if (locate(attacker)?.zone != ZoneType.MONSTER_ZONE) return
 
         if (target == null) {
-            if (defendingPlayer.hasMonsters) {
-                log("相手フィールドにモンスターがいるため直接攻撃はできない。")
-                return
-            }
             if (!allowed(attackingPlayer, RestrictionKind.DIRECT_ATTACK, attacker)) {
                 log("制限により直接攻撃はできない。")
                 return
             }
+            if (defendingPlayer.hasMonsters &&
+                !permitted(attackingPlayer, PermissionKind.DIRECT_ATTACK, attacker)
+            ) {
+                log("相手フィールドにモンスターがいるため直接攻撃はできない。")
+                return
+            }
             log("${defendingPlayer.name}への直接攻撃！")
-            dealDamage(defendingPlayer, atkOf(attacker))
+            dealBattleDamage(attacker, attackingPlayer, defendingPlayer, atkOf(attacker))
             return
         }
 
@@ -2926,12 +3054,16 @@ class GameEngine(
             val defenderAttack = atkOf(target)
             when {
                 attack > defenderAttack -> {
-                    dealDamage(defendingPlayer, attack - defenderAttack)
+                    dealBattleDamage(
+                        attacker, attackingPlayer, defendingPlayer, attack - defenderAttack
+                    )
                     destroy(target, byBattle = true)
                 }
 
                 attack < defenderAttack -> {
-                    dealDamage(attackingPlayer, defenderAttack - attack)
+                    dealBattleDamage(
+                        target, defendingPlayer, attackingPlayer, defenderAttack - attack
+                    )
                     destroy(attacker, byBattle = true)
                 }
 
@@ -2944,7 +3076,8 @@ class GameEngine(
             val defense = defOf(target)
             when {
                 attack > defense -> destroy(target, byBattle = true)
-                attack < defense -> dealDamage(attackingPlayer, defense - attack)
+                attack < defense ->
+                    dealBattleDamage(target, defendingPlayer, attackingPlayer, defense - attack)
                 else -> log("戦闘は相殺された。")
             }
         }
@@ -3038,6 +3171,7 @@ class GameEngine(
             player.normalSummonUsed = false
             player.activationsThisTurn.clear()
             player.restrictions.removeAll { it.untilTurn < state.turn }
+            player.permissions.removeAll { it.untilTurn < state.turn }
             (player.monsters + player.spellsAndTraps).forEach { it.resetForNewTurn() }
         }
 

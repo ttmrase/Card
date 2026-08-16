@@ -106,6 +106,14 @@ data class BoardSignal(val id: Long, val kind: BoardSignalKind, val text: String
  *
  * [untilTurn] のターンが終わると消える。
  */
+/** 「このターン、〜は直接攻撃できる」のような許可。 */
+data class PlayPermission(
+    val kind: PermissionKind,
+    val filters: List<CardFilter>,
+    val except: Boolean,
+    val untilTurn: Int
+)
+
 data class PlayRestriction(
     val kind: RestrictionKind,
     val filters: List<CardFilter>,
@@ -154,6 +162,9 @@ class PlayerState(
 
     /** いま掛かっている制限。ターンが進むと期限切れのものが消える。 */
     val restrictions: SnapshotStateList<PlayRestriction> = mutableStateListOf()
+
+    /** いま付いている許可。ターンが進むと期限切れのものが消える。 */
+    val permissions: SnapshotStateList<PlayPermission> = mutableStateListOf()
 
     val monsters: List<CardInstance> get() = monsterZones.filterNotNull()
     val spellsAndTraps: List<CardInstance> get() = spellTrapZones.filterNotNull()

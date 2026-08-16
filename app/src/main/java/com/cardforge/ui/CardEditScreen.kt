@@ -265,6 +265,55 @@ fun CardEditScreen(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+
+                    HorizontalDivider()
+                    Text(
+                        "このカード自身にずっと掛かる制限",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        "発動に付ける【制限】と違って、効果とは関係なく常に掛かります。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    FlowRowSimple {
+                        SELF_RESTRICTIONS.forEach { candidate ->
+                            Chip(
+                                candidate.label,
+                                selected = candidate in card.selfRestrictions
+                            ) {
+                                card = card.copy(
+                                    selfRestrictions =
+                                        if (candidate in card.selfRestrictions)
+                                            card.selfRestrictions - candidate
+                                        else card.selfRestrictions + candidate
+                                )
+                            }
+                        }
+                    }
+
+                    Text(
+                        "このカード自身にずっと付く許可",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    FlowRowSimple {
+                        PermissionKind.all.forEach { candidate ->
+                            Chip(
+                                candidate.label,
+                                selected = candidate in card.selfPermissions,
+                                color = Gold
+                            ) {
+                                card = card.copy(
+                                    selfPermissions =
+                                        if (candidate in card.selfPermissions)
+                                            card.selfPermissions - candidate
+                                        else card.selfPermissions + candidate
+                                )
+                            }
+                        }
+                    }
                 }
             }
 
@@ -578,3 +627,13 @@ private fun tributeHint(level: Int): String = when {
     level <= 6 -> "レベル5〜6：通常召喚には1体のリリースが必要です。"
     else -> "レベル7以上：通常召喚には2体のリリースが必要です。"
 }
+
+/** カード自身に付けられる制限。召喚の可否は上のチェックで指定する。 */
+private val SELF_RESTRICTIONS = listOf(
+    RestrictionKind.ATTACK,
+    RestrictionKind.DIRECT_ATTACK,
+    RestrictionKind.CHANGE_POSITION,
+    RestrictionKind.TRIBUTE,
+    RestrictionKind.DEAL_BATTLE_DAMAGE,
+    RestrictionKind.TAKE_BATTLE_DAMAGE
+)

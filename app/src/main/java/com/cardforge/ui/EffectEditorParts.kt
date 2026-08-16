@@ -261,6 +261,39 @@ fun CardScopeEditor(
             Text("この効果を持つカード自身を対象にする")
         }
 
+        Text(
+            "誘発のきっかけになったカードを指す（任意）",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        FlowRowSimple {
+            Chip("指定しない", selected = scope.triggerCard == null) {
+                onChange(scope.copy(triggerCard = null))
+            }
+            TriggerCardRef.all.forEach { candidate ->
+                Chip(candidate.label, selected = scope.triggerCard == candidate) {
+                    onChange(scope.copy(triggerCard = candidate, selfOnly = false))
+                }
+            }
+        }
+        if (scope.triggerCard != null) {
+            Text(
+                "【条件】に書いた出来事のカードだけを指します。" +
+                    "「攻撃してきたモンスターを破壊する」「そのカードを墓地へ送る」" +
+                    "のように使います。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Surface(color = Surface2, shape = MaterialTheme.shapes.small) {
+                Text(
+                    EffectTextRenderer.scopeToText(scope, master),
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(8.dp)
+                )
+            }
+            return@Column
+        }
+
         if (scope.selfOnly) {
             Surface(color = Surface2, shape = MaterialTheme.shapes.small) {
                 Text(

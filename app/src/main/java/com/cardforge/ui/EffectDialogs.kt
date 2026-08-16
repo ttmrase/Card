@@ -44,6 +44,7 @@ private enum class ActionType(val label: String, val usesScope: Boolean) {
     REMOVE_COUNTER("カウンターを取り除く", true),
     REPLACE_DESTINATION("墓地へ送られる代わりに（永続向き）", true),
     RESTRICT("〜できなくする（制限を掛ける）", false),
+    PERMIT("〜できるようにする（許可を与える）", false),
     REVEAL("カードを相手に見せる（公開する）", true),
     NEGATE("発動を無効にし破壊する", false)
 }
@@ -75,6 +76,7 @@ private fun typeOf(action: Action): ActionType = when (action) {
     is RemoveCounterAction -> ActionType.REMOVE_COUNTER
     is ReplaceDestinationAction -> ActionType.REPLACE_DESTINATION
     is RestrictAction -> ActionType.RESTRICT
+    is PermitAction -> ActionType.PERMIT
     // 旧データ用。編集画面では【制限】として扱う。
     is RestrictSummonAction -> ActionType.NEGATE
     is RevealAction -> ActionType.REVEAL
@@ -228,6 +230,8 @@ fun ActionDialog(
         mutableStateOf((initial as? ReplaceDestinationAction)?.to ?: MoveDestination.BANISHED)
     }
     var restrict by remember { mutableStateOf((initial as? RestrictAction) ?: RestrictAction()) }
+    var permit by remember { mutableStateOf((initial as? PermitAction) ?: PermitAction()) }
+    var showPermitFilter by remember { mutableStateOf(false) }
     var showRestrictFilter by remember { mutableStateOf(false) }
     var protectionFrom by remember {
         mutableStateOf((initial as? GrantProtectionAction)?.from ?: PlayerRef.OPPONENT)
@@ -278,6 +282,7 @@ fun ActionDialog(
         ActionType.REMOVE_COUNTER -> RemoveCounterAction(scope, counterId, counterAmount)
         ActionType.REPLACE_DESTINATION -> ReplaceDestinationAction(scope, replaceTo)
         ActionType.RESTRICT -> restrict
+        ActionType.PERMIT -> permit
         ActionType.REVEAL -> RevealAction(scope, revealDuration)
         ActionType.NEGATE -> NegateAction
     }
@@ -644,6 +649,45 @@ fun ActionDialog(
                         )
                     }
 
+                    ActionType.PERMIT -> {
+                        HorizontalDivider()
+                        Dropdown(
+                            "許可を受ける側", PlayerRef.all, permit.who, { it.label }
+                        ) { permit = permit.copy(who = it) }
+                        Dropdown(
+                            "できるようにすること", PermissionKind.all, permit.kind, { it.label }
+                        ) { permit = permit.copy(kind = it) }
+                        Dropdown(
+                            "続く長さ（発動する効果のとき）",
+                            RestrictionDuration.all,
+                            permit.duration,
+                            { it.label }
+                        ) { permit = permit.copy(duration = it) }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(
+                                checked = permit.except,
+                                onCheckedChange = { permit = permit.copy(except = it) }
+                            )
+                            Text("指定したカード「以外」を対象にする")
+                        }
+                        Text(
+                            "対象のカードの条件（空なら${permit.kind.defaultNoun}全体）",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        FlowRowSimple {
+                            permit.filters.forEachIndexed { index, filter ->
+                                Chip(filterChipLabel(filter, master) + " ✕", selected = true) {
+                                    permit = permit.copy(
+                                        filters = permit.filters.toMutableList()
+                                            .also { it.removeAt(index) }
+                                    )
+                                }
+                            }
+                            Chip("＋ 条件を追加") { showPermitFilter = true }
+                        }
+                    }
+
                     ActionType.ADVANCE_PHASE -> {
                         HorizontalDivider()
                         Dropdown("どう進めるか", PhaseAdvance.all, advance, { it.label }) {
@@ -695,6 +739,17 @@ fun ActionDialog(
         confirmButton = { TextButton(onClick = { onConfirm(build()) }) { Text("決定") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("キャンセル") } }
     )
+
+    if (showPermitFilter) {
+        FilterDialog(
+            master = master,
+            onDismiss = { showPermitFilter = false },
+            onConfirm = {
+                permit = permit.copy(filters = permit.filters + it)
+                showPermitFilter = false
+            }
+        )
+    }
 
     if (showRestrictFilter) {
         FilterDialog(

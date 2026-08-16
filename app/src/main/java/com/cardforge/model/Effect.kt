@@ -59,6 +59,23 @@ data class NotFilter(val filter: CardFilter) : CardFilter
 @SerialName("affectedName")
 data class AffectedNameFilter(val exclude: Boolean = false) : CardFilter
 
+/**
+ * 誘発のきっかけになったカードの指し方。
+ *
+ * 「攻撃宣言した」なら [EVENT_CARD] が攻撃したモンスター、
+ * [SOURCE_CARD] が攻撃された側のモンスター。
+ * 「攻撃対象になった」なら逆になる。
+ */
+@Serializable
+enum class TriggerCardRef(val label: String) {
+    EVENT_CARD("その出来事の対象になったカード"),
+    SOURCE_CARD("その出来事の相手側のカード");
+
+    companion object {
+        val all: List<TriggerCardRef> get() = entries
+    }
+}
+
 /** 並べた条件のうち、どれか1つに当てはまればよい。 */
 @Serializable
 @SerialName("anyFilter")
@@ -99,6 +116,11 @@ data class CardScope(
     val upTo: Boolean = false,
     /** 「このカードを除く」。この効果を持つカード自身を対象から外す。 */
     val excludeSelf: Boolean = false,
+    /**
+     * 誘発のきっかけになったカードだけを指す。
+     * 「攻撃してきたモンスターを破壊する」「そのカードを墓地へ送る」などに使う。
+     */
+    val triggerCard: TriggerCardRef? = null,
     /**
      * 「デッキまたは墓地」のように、複数の領域をまとめて対象にするときの指定。
      * 空なら [zone] の1つだけを見る。
@@ -294,6 +316,23 @@ data class RestrictAction(
     val kind: RestrictionKind = RestrictionKind.ATTACK,
     val filters: List<CardFilter> = emptyList(),
     /** true なら [filters] に当てはまるもの「以外」を禁止する。 */
+    val except: Boolean = false,
+    val duration: RestrictionDuration = RestrictionDuration.THIS_TURN
+) : Action
+
+/**
+ * 「〜できる」という許可を与える述語。
+ *
+ * 【発動タイプ】を「永続」にするとこのカードが【場所】にある間ずっと、
+ * 発動する効果に書くと [duration] のあいだ適用される。
+ */
+@Serializable
+@SerialName("permit")
+data class PermitAction(
+    val who: PlayerRef = PlayerRef.SELF,
+    val kind: PermissionKind = PermissionKind.DIRECT_ATTACK,
+    val filters: List<CardFilter> = emptyList(),
+    /** true なら [filters] に当てはまるもの「以外」を対象にする。 */
     val except: Boolean = false,
     val duration: RestrictionDuration = RestrictionDuration.THIS_TURN
 ) : Action

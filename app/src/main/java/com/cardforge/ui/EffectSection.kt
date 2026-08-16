@@ -141,6 +141,9 @@ fun EffectEditorSection(
 
         // ---- 各効果 -----------------------------------------------------
         effect.clauses.forEachIndexed { clauseIndex, clause ->
+            // あとから前に効果を差し込めるようにする。
+            InsertClauseButton(clauseIndex) { onChange(effect.insertClause(clauseIndex)) }
+
             ClauseEditor(
                 index = clauseIndex,
                 clause = clause,
@@ -149,9 +152,7 @@ fun EffectEditorSection(
                 onChange = { updated ->
                     onChange(effect.copy(clauses = effect.clauses.replacedAt(clauseIndex, updated)))
                 },
-                onDelete = {
-                    onChange(effect.copy(clauses = effect.clauses.removedAt(clauseIndex)))
-                },
+                onDelete = { onChange(effect.removeClause(clauseIndex)) },
                 slot = { branchIndex, itemIndex -> EditSlot(clauseIndex, branchIndex, itemIndex) },
                 onConditionSlot = { conditionSlot = it },
                 onCostSlot = { costSlot = it },
@@ -243,6 +244,29 @@ fun EffectEditorSection(
 
 private fun <T> List<T>.removedAt(index: Int): List<T> =
     toMutableList().also { it.removeAt(index) }
+
+/**
+ * [at] の位置に空の効果を差し込む。
+ * 【制限】が名指ししている効果番号もあわせてずらす。
+ */
+private fun EffectText.insertClause(at: Int): EffectText = copy(
+    clauses = clauses.toMutableList().also { it.add(at, EffectClause()) },
+    limits = limits.map { limit ->
+        limit.copy(clauseIndices = limit.clauseIndices.map { if (it >= at) it + 1 else it })
+    }
+)
+
+/** [at] の効果を消す。【制限】が名指ししている効果番号もあわせて詰める。 */
+private fun EffectText.removeClause(at: Int): EffectText = copy(
+    clauses = clauses.removedAt(at),
+    limits = limits.map { limit ->
+        limit.copy(
+            clauseIndices = limit.clauseIndices
+                .filter { it != at }
+                .map { if (it > at) it - 1 else it }
+        )
+    }
+)
 
 /** 任意にする処理の番号を入れ替える。 */
 private fun List<Int>.toggled(index: Int): List<Int> =
@@ -880,5 +904,15 @@ private fun NoResponsePicker(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
+    }
+}
+
+/** 効果と効果のあいだに、新しい効果を差し込むボタン。 */
+@Composable
+private fun InsertClauseButton(index: Int, onClick: () -> Unit) {
+    TextButton(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
+        Icon(Icons.Default.Add, contentDescription = null)
+        Spacer(Modifier.width(6.dp))
+        Text("ここに効果 ${EffectNumbers.circled(index)} を差し込む")
     }
 }

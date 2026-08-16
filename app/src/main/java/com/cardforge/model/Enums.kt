@@ -273,7 +273,14 @@ enum class RestrictionKind(
     ACTIVATE_MONSTER_EFFECT(
         "モンスターの効果を発動できない", "{who}は{target}の効果を発動できない", "モンスター"
     ),
-    ACTIVATE_ANY("カードの効果を発動できない", "{who}は{target}の効果を発動できない", "カード");
+    ACTIVATE_ANY("カードの効果を発動できない", "{who}は{target}の効果を発動できない", "カード"),
+    TRIBUTE("リリースできない", "{who}は{target}をリリースできない", "モンスター"),
+    DEAL_BATTLE_DAMAGE(
+        "戦闘ダメージを与えられない", "{who}の{target}は戦闘ダメージを与えられない", "モンスター"
+    ),
+    TAKE_BATTLE_DAMAGE(
+        "戦闘ダメージを受けない", "{who}は{target}との戦闘では戦闘ダメージを受けない", "モンスター"
+    );
 
     /** 召喚に関する制限かどうか。 */
     val isSummon: Boolean
@@ -281,6 +288,26 @@ enum class RestrictionKind(
 
     companion object {
         val all: List<RestrictionKind> get() = entries
+    }
+}
+
+/**
+ * 「〜できる」という許可。制限とは逆に、ルール上できないことを可能にする。
+ */
+@Serializable
+enum class PermissionKind(
+    val label: String,
+    val template: String,
+    val defaultNoun: String
+) {
+    DIRECT_ATTACK(
+        "相手モンスターがいても直接攻撃できる",
+        "{who}の{target}は、相手にモンスターがいても直接攻撃できる",
+        "モンスター"
+    );
+
+    companion object {
+        val all: List<PermissionKind> get() = entries
     }
 }
 
