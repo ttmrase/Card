@@ -34,17 +34,20 @@ object LegacyMigration {
      * 効果としての召喚制限は、効果を無効にされると掛からなくなってしまうため。
      */
     private fun moveSummonRestrictions(effect: EffectText): EffectText {
-        if (effect.clauses.none { clause -> clause.actions.any { it is RestrictSummonAction } }) {
-            return effect
-        }
+        val hasAction =
+            effect.clauses.any { clause -> clause.actions.any { it is RestrictSummonAction } }
+        val hasOldLocks =
+            effect.summonLocks.isNotEmpty() || effect.clauses.any { it.summonLocks.isNotEmpty() }
+        if (!hasAction && !hasOldLocks) return effect
 
-        val movedToCard = mutableListOf<SummonLock>()
+        val movedToCard = mutableListOf<PlayLock>()
         val clauses = effect.clauses.mapNotNull { clause ->
+            val fromOldLocks = clause.summonLocks.map(::toPlayLock)
             val restrictions = clause.actions.filterIsInstance<RestrictSummonAction>()
-            if (restrictions.isEmpty()) return@mapNotNull clause
+            if (restrictions.isEmpty() && fromOldLocks.isEmpty()) return@mapNotNull clause
 
-            val locks = restrictions.map {
-                SummonLock(it.who, it.summon, it.filters, it.except)
+            val locks = fromOldLocks + restrictions.map {
+                toPlayLock(SummonLock(it.who, it.summon, it.filters, it.except))
             }
             val rest = clause.actions.filterNot { it is RestrictSummonAction }
             // 「発動時」の制限だけの効果は、カード全体の【制限】に移す。
@@ -52,14 +55,30 @@ object LegacyMigration {
                 movedToCard += locks
                 null
             } else {
-                clause.copy(actions = rest, summonLocks = clause.summonLocks + locks)
+                clause.copy(
+                    actions = rest,
+                    summonLocks = emptyList(),
+                    playLocks = clause.playLocks + locks
+                )
             }
         }
         return effect.copy(
-            summonLocks = effect.summonLocks + movedToCard,
+            summonLocks = emptyList(),
+            playLocks = effect.playLocks + effect.summonLocks.map(::toPlayLock) + movedToCard,
             clauses = clauses
         )
     }
+
+    private fun toPlayLock(lock: SummonLock): PlayLock = PlayLock(
+        who = lock.who,
+        kind = when (lock.summon) {
+            SummonKind.NORMAL -> RestrictionKind.NORMAL_SUMMON
+            SummonKind.SPECIAL -> RestrictionKind.SPECIAL_SUMMON
+            SummonKind.ANY -> RestrictionKind.ANY_SUMMON
+        },
+        filters = lock.filters,
+        except = lock.except
+    )
 
     private fun toClause(effect: ContinuousEffect): EffectClause {
         // 旧データの scope が null なら「このカード自身」を指していた。

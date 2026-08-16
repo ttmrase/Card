@@ -102,14 +102,16 @@ enum class BoardSignalKind(val label: String) {
 data class BoardSignal(val id: Long, val kind: BoardSignalKind, val text: String)
 
 /**
- * 「このターン、〜以外を特殊召喚できない」という召喚の制限。
- * ターンの終わりに消える。
+ * 「このターン、〜以外を特殊召喚できない」のような制限。
+ *
+ * [untilTurn] のターンが終わると消える。
  */
-data class SummonRestriction(
-    val summon: SummonKind,
+data class PlayRestriction(
+    val kind: RestrictionKind,
     val filters: List<CardFilter>,
     /** true なら [filters] に当てはまるもの「以外」を禁止する。 */
-    val except: Boolean
+    val except: Boolean,
+    val untilTurn: Int
 )
 
 /**
@@ -150,8 +152,8 @@ class PlayerState(
     /** そのターンに発動した効果の記録（【制限】の判定に使う）。 */
     val activationsThisTurn: SnapshotStateList<ActivationRecord> = mutableStateListOf()
 
-    /** そのターンに掛けられた召喚の制限。 */
-    val summonRestrictions: SnapshotStateList<SummonRestriction> = mutableStateListOf()
+    /** いま掛かっている制限。ターンが進むと期限切れのものが消える。 */
+    val restrictions: SnapshotStateList<PlayRestriction> = mutableStateListOf()
 
     val monsters: List<CardInstance> get() = monsterZones.filterNotNull()
     val spellsAndTraps: List<CardInstance> get() = spellTrapZones.filterNotNull()

@@ -1257,6 +1257,16 @@ class GameEngine(
 
             is MaterialSummonAction -> runMaterialSummon(action, controller, source)
 
+            is RestrictAction -> {
+                val until = when (action.duration) {
+                    RestrictionDuration.THIS_TURN -> state.turn
+                    RestrictionDuration.NEXT_TURN -> state.turn + 1
+                }
+                playersFor(action.who, controller).forEach { player ->
+                    addRestriction(player, action.kind, action.filters, action.except, until)
+                }
+            }
+
             is AddCounterAction -> {
                 val targets = resolveTargets(
                     action.scope, controller, "カウンターを乗せるカードを選択", source
@@ -1372,6 +1382,8 @@ class GameEngine(
         val effect = effectOf(inst) ?: return emptyList()
         // 発動の処理中のカードは、その解決が終わるまで発動し直せない。
         if (inst.uid in resolvingCards) return emptyList()
+        // 「魔法カードを発動できない」のような制限。
+        if (!activationAllowed(inst, controller)) return emptyList()
 
         return effect.clauses.indices.filter { index ->
             val clause = effect.clauses[index]
@@ -1766,6 +1778,9 @@ class GameEngine(
         val isOwnTurn = state.turnPlayer === controller
         val inMainPhase = state.phase == Phase.MAIN1 || state.phase == Phase.MAIN2
 
+        if (!activationAllowed(inst, controller)) {
+            return "【制限】により、このカードの効果は発動できない。"
+        }
         if (inst.card.kind == CardKind.SPELL && !isOwnTurn) {
             return "魔法カードは自分のターンにしか発動できない。"
         }
@@ -1877,6 +1892,7 @@ class GameEngine(
     fun canActivateCardItself(inst: CardInstance, controller: PlayerState): Boolean {
         if (inst.card.kind == CardKind.MONSTER) return false
         if (inst.uid in resolvingCards) return false
+        if (!activationAllowed(inst, controller)) return false
         val effect = inst.card.effect ?: return false
         if (!effect.supportsCardActivation()) return false
         // 表側で場に出ているカードは、既に発動を終えている。
@@ -1966,7 +1982,7 @@ class GameEngine(
         }
 
         recordActivation(inst, CARD_ACTIVATION, controller)
-        applySummonLocks(effect.summonLocks, controller)
+        applyPlayLocks(effect.playLocks, controller)
 
         val blocked = withoutResponses(effect.noResponseFrom, controller) {
             emit(GameEvent(GameEventType.ACTIVATED, controller.index, inst))
@@ -2145,7 +2161,7 @@ class GameEngine(
 
         recordActivation(inst, clauseIndex, controller)
         // 【制限】の召喚制限は、発動した時点で掛かる（無効にされても残る）。
-        applySummonLocks(effect.summonLocksFor(clauseIndex), controller)
+        applyPlayLocks(effect.playLocksFor(clauseIndex), controller)
 
         // 「この発動に対して効果を発動できない」は、発動を知らせる前から働く。
         val negated = withoutResponses(effect.noResponseFor(clauseIndex), controller) {
@@ -2598,24 +2614,88 @@ class GameEngine(
      *
      * 効果ではなく発動そのものに付く制限なので、効果を無効にされても掛かったまま。
      */
-    private fun applySummonLocks(locks: List<SummonLock>, controller: PlayerState) {
+    private fun applyPlayLocks(locks: List<PlayLock>, controller: PlayerState) {
         for (lock in locks) {
-            val restriction = SummonRestriction(lock.summon, lock.filters, lock.except)
             playersFor(lock.who, controller).forEach { player ->
-                player.summonRestrictions.add(restriction)
-                log("${player.name}はこのターン、${restrictionText(restriction)}。")
+                addRestriction(player, lock.kind, lock.filters, lock.except, state.turn)
             }
         }
     }
 
-    /** ログや通知に出す、召喚制限の一文。 */
-    private fun restrictionText(restriction: SummonRestriction): String {
-        val noun = if (restriction.filters.isEmpty()) "モンスター"
-        else EffectTextRenderer.filtersToNoun(
-            restriction.filters, state.master, ZoneType.MONSTER_ZONE
+    private fun addRestriction(
+        player: PlayerState,
+        kind: RestrictionKind,
+        filters: List<CardFilter>,
+        except: Boolean,
+        untilTurn: Int
+    ) {
+        val restriction = PlayRestriction(kind, filters, except, untilTurn)
+        player.restrictions.add(restriction)
+        log(
+            EffectTextRenderer.restrictionSentence(
+                player.name, kind, filters, except, state.master
+            ) + "。"
         )
-        val head = if (restriction.except) "${noun}以外のモンスター" else noun
-        return "${head}を${restriction.summon.label}できない"
+    }
+
+    /**
+     * [player] が [kind] の行動を [card] について行えるか。
+     *
+     * 発動して掛けた制限（期限付き）と、永続の効果で掛かっている制限の両方を見る。
+     */
+    fun allowed(player: PlayerState, kind: RestrictionKind, card: CardInstance?): Boolean {
+        fun blocks(
+            restrictionKind: RestrictionKind,
+            filters: List<CardFilter>,
+            except: Boolean
+        ): Boolean {
+            if (!coversKind(restrictionKind, kind)) return false
+            if (card == null) return true
+            val matches = matchesAll(card, filters)
+            return if (except) !matches else matches
+        }
+
+        val stored = player.restrictions.any {
+            it.untilTurn >= state.turn && blocks(it.kind, it.filters, it.except)
+        }
+        if (stored) return false
+
+        return withoutRecursion(true) {
+            activeContinuous().none { (source, owner, clause) ->
+                clause.actions.filterIsInstance<RestrictAction>().any { action ->
+                    playersFor(action.who, owner).any { it === player } &&
+                        blocks(action.kind, action.filters, action.except)
+                }
+            }
+        }
+    }
+
+    /** 掛かっている制限が、いま調べたい行動を含むか。 */
+    private fun coversKind(restriction: RestrictionKind, asked: RestrictionKind): Boolean = when {
+        restriction == asked -> true
+        restriction == RestrictionKind.ANY_SUMMON && asked.isSummon -> true
+        // 「攻撃できない」は直接攻撃も含む。
+        restriction == RestrictionKind.ATTACK && asked == RestrictionKind.DIRECT_ATTACK -> true
+        // 「カードの効果を発動できない」は全ての発動を含む。
+        restriction == RestrictionKind.ACTIVATE_ANY && asked in ACTIVATION_KINDS -> true
+        else -> false
+    }
+
+    private val ACTIVATION_KINDS = setOf(
+        RestrictionKind.ACTIVATE_SPELL,
+        RestrictionKind.ACTIVATE_TRAP,
+        RestrictionKind.ACTIVATE_MONSTER_EFFECT,
+        RestrictionKind.ACTIVATE_ANY
+    )
+
+    /** [inst] を発動しようとしたとき、それを禁じる制限が掛かっていないか。 */
+    private fun activationAllowed(inst: CardInstance, controller: PlayerState): Boolean {
+        val kind = when (inst.card.kind) {
+            CardKind.SPELL -> RestrictionKind.ACTIVATE_SPELL
+            CardKind.TRAP -> RestrictionKind.ACTIVATE_TRAP
+            CardKind.MONSTER -> RestrictionKind.ACTIVATE_MONSTER_EFFECT
+        }
+        return allowed(controller, kind, inst)
     }
 
     /** [inst] を [kind] の方法で出せるか。掛かっている召喚制限を見る。 */
@@ -2635,13 +2715,15 @@ class GameEngine(
         inst: CardInstance,
         controller: PlayerState,
         kind: SummonKind
-    ): Boolean = controller.summonRestrictions.none { restriction ->
-        val applies = restriction.summon == SummonKind.ANY || restriction.summon == kind
-        if (!applies) return@none false
-        val matches = matchesAll(inst, restriction.filters)
-        // 「〜以外を出せない」なら、当てはまらないカードが禁止される。
-        if (restriction.except) !matches else matches
-    }
+    ): Boolean = allowed(
+        controller,
+        when (kind) {
+            SummonKind.NORMAL -> RestrictionKind.NORMAL_SUMMON
+            SummonKind.SPECIAL -> RestrictionKind.SPECIAL_SUMMON
+            SummonKind.ANY -> RestrictionKind.ANY_SUMMON
+        },
+        inst
+    )
 
     fun canNormalSummon(inst: CardInstance, controller: PlayerState): Boolean {
         if (inst.card.kind != CardKind.MONSTER) return false
@@ -2740,7 +2822,8 @@ class GameEngine(
 
     /** 表側攻撃表示 ⇔ 表側守備表示の変更。1ターンに1度、召喚したターンは不可。 */
     fun canChangePosition(inst: CardInstance, controller: PlayerState): Boolean =
-        state.turnPlayer === controller &&
+        allowed(controller, RestrictionKind.CHANGE_POSITION, inst) &&
+            state.turnPlayer === controller &&
             (state.phase == Phase.MAIN1 || state.phase == Phase.MAIN2) &&
             locate(inst)?.zone == ZoneType.MONSTER_ZONE &&
             !inst.positionChangedThisTurn &&
@@ -2769,6 +2852,7 @@ class GameEngine(
         if (loc.zone != ZoneType.MONSTER_ZONE) return false
         if (loc.player !== state.turnPlayer) return false
         if (isAttackLocked(inst)) return false
+        if (!allowed(loc.player, RestrictionKind.ATTACK, inst)) return false
         return !inst.faceDown && inst.position == Position.ATTACK && !inst.hasAttacked
     }
 
@@ -2779,6 +2863,11 @@ class GameEngine(
     fun attackTargets(): List<CardInstance> = state.nonTurnPlayer.monsters
 
     fun canAttackDirectly(): Boolean = !state.nonTurnPlayer.hasMonsters
+
+    /** [inst] が直接攻撃できるか。制限が掛かっていれば false。 */
+    fun canAttackDirectlyWith(inst: CardInstance): Boolean =
+        canAttackDirectly() &&
+            allowed(locate(inst)?.player ?: state.turnPlayer, RestrictionKind.DIRECT_ATTACK, inst)
 
     suspend fun declareAttack(attacker: CardInstance, target: CardInstance?) {
         if (!canAttack(attacker)) return
@@ -2813,6 +2902,10 @@ class GameEngine(
         if (target == null) {
             if (defendingPlayer.hasMonsters) {
                 log("相手フィールドにモンスターがいるため直接攻撃はできない。")
+                return
+            }
+            if (!allowed(attackingPlayer, RestrictionKind.DIRECT_ATTACK, attacker)) {
+                log("制限により直接攻撃はできない。")
                 return
             }
             log("${defendingPlayer.name}への直接攻撃！")
@@ -2944,7 +3037,7 @@ class GameEngine(
         state.players.forEach { player ->
             player.normalSummonUsed = false
             player.activationsThisTurn.clear()
-            player.summonRestrictions.clear()
+            player.restrictions.removeAll { it.untilTurn < state.turn }
             (player.monsters + player.spellsAndTraps).forEach { it.resetForNewTurn() }
         }
 

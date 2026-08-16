@@ -286,10 +286,10 @@ class QuickAndLockTest {
             id = newId(), name = "VALIS・号令", kind = CardKind.SPELL,
             effect = EffectText(
                 locations = listOf(ActivationLocation.HAND),
-                summonLocks = listOf(
-                    SummonLock(
+                playLocks = listOf(
+                    PlayLock(
                         who = PlayerRef.SELF,
-                        summon = SummonKind.SPECIAL,
+                        kind = RestrictionKind.SPECIAL_SUMMON,
                         filters = listOf(CategoryFilter(valis)),
                         except = true
                     )
@@ -368,7 +368,7 @@ class QuickAndLockTest {
 
         val migrated = LegacyMigration.migrate(old)
         val effect = migrated.effect!!
-        assertEquals("【制限】に移る", 1, effect.summonLocks.size)
+        assertEquals("【制限】に移る", 1, effect.playLocks.size)
         assertEquals("制限だけの効果は消える", 1, effect.clauses.size)
         assertTrue(
             effect.clauses.none { clause -> clause.actions.any { it is RestrictSummonAction } }

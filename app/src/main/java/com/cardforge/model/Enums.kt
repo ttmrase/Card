@@ -250,6 +250,54 @@ enum class SummonKind(val label: String) {
     }
 }
 
+/**
+ * 何を禁止するかの種類。
+ *
+ * [template] の `{who}` に制限を受ける側、`{target}` に禁止する対象の名詞が入る。
+ * 対象を絞らない場合は [defaultNoun] がそのまま入る。
+ */
+@Serializable
+enum class RestrictionKind(
+    val label: String,
+    val template: String,
+    val defaultNoun: String
+) {
+    NORMAL_SUMMON("通常召喚できない", "{who}は{target}を通常召喚できない", "モンスター"),
+    SPECIAL_SUMMON("特殊召喚できない", "{who}は{target}を特殊召喚できない", "モンスター"),
+    ANY_SUMMON("召喚・特殊召喚できない", "{who}は{target}を召喚・特殊召喚できない", "モンスター"),
+    ATTACK("攻撃できない", "{who}の{target}は攻撃できない", "モンスター"),
+    DIRECT_ATTACK("直接攻撃できない", "{who}の{target}は直接攻撃できない", "モンスター"),
+    CHANGE_POSITION("表示形式を変更できない", "{who}は{target}の表示形式を変更できない", "モンスター"),
+    ACTIVATE_SPELL("魔法カードを発動できない", "{who}は{target}を発動できない", "魔法カード"),
+    ACTIVATE_TRAP("罠カードを発動できない", "{who}は{target}を発動できない", "罠カード"),
+    ACTIVATE_MONSTER_EFFECT(
+        "モンスターの効果を発動できない", "{who}は{target}の効果を発動できない", "モンスター"
+    ),
+    ACTIVATE_ANY("カードの効果を発動できない", "{who}は{target}の効果を発動できない", "カード");
+
+    /** 召喚に関する制限かどうか。 */
+    val isSummon: Boolean
+        get() = this == NORMAL_SUMMON || this == SPECIAL_SUMMON || this == ANY_SUMMON
+
+    companion object {
+        val all: List<RestrictionKind> get() = entries
+    }
+}
+
+/** 発動する効果で掛けた制限が、いつまで続くか。 */
+@Serializable
+enum class RestrictionDuration(val label: String) {
+    /** このターンの終わりまで。 */
+    THIS_TURN("このターンの間"),
+
+    /** 次のターン（相手のターン）の終わりまで。 */
+    NEXT_TURN("次のターンの終わりまで");
+
+    companion object {
+        val all: List<RestrictionDuration> get() = entries
+    }
+}
+
 /** カードを公開しておく長さ。 */
 @Serializable
 enum class RevealDuration(val label: String) {

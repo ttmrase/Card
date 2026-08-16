@@ -133,7 +133,8 @@ fun DuelScreen(
             PhaseBar(
                 phaseLabel = state.phase.label,
                 interactive = interactive,
-                canAttackDirectly = state.phase == Phase.BATTLE && engine.canAttackDirectly(),
+                canAttackDirectly = state.phase == Phase.BATTLE &&
+                    attacker?.let { engine.canAttackDirectlyWith(it) } ?: engine.canAttackDirectly(),
                 attacking = attacker != null,
                 onCancelAttack = { attacker = null },
                 onDirectAttack = {

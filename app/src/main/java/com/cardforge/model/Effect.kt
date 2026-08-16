@@ -281,6 +281,23 @@ data class MaterialSummonAction(
     val choices: List<Position> get() = positionChoices.ifEmpty { listOf(Position.ATTACK) }
 }
 
+/**
+ * 「〜は〜できない」という制限を掛ける述語。
+ *
+ * 【発動タイプ】を「永続」にするとこのカードが【場所】にある間ずっと、
+ * 発動する効果に書くと [duration] のあいだ適用される。
+ */
+@Serializable
+@SerialName("restrict")
+data class RestrictAction(
+    val who: PlayerRef = PlayerRef.OPPONENT,
+    val kind: RestrictionKind = RestrictionKind.ATTACK,
+    val filters: List<CardFilter> = emptyList(),
+    /** true なら [filters] に当てはまるもの「以外」を禁止する。 */
+    val except: Boolean = false,
+    val duration: RestrictionDuration = RestrictionDuration.THIS_TURN
+) : Action
+
 /** カードにカウンターを乗せる。 */
 @Serializable
 @SerialName("addCounter")
@@ -696,6 +713,24 @@ data class UsageLimit(
  * [except] が true なら「[filters] に当てはまるもの**以外**を出せない」、
  * false なら「[filters] に当てはまるものを出せない」。
  */
+/**
+ * 【制限】としての縛り。
+ *
+ * 効果ではなく発動そのものに付く制限なので、効果を無効にされても掛かったままになる。
+ * 掛かるのは発動したターンの間だけ。
+ *
+ * [except] が true なら「[filters] に当てはまるもの**以外**を禁止」、
+ * false なら「[filters] に当てはまるものを禁止」。
+ */
+@Serializable
+data class PlayLock(
+    val who: PlayerRef = PlayerRef.SELF,
+    val kind: RestrictionKind = RestrictionKind.SPECIAL_SUMMON,
+    val filters: List<CardFilter> = emptyList(),
+    val except: Boolean = true
+)
+
+/** 旧データ互換。読み込み時に [PlayLock] へ移す。 */
 @Serializable
 data class SummonLock(
     val who: PlayerRef = PlayerRef.SELF,
@@ -748,8 +783,10 @@ data class EffectClause(
      * 片方だけを行えないようにしたいときに使う。
      */
     val linkedSteps: List<Int> = emptyList(),
-    /** この効果の発動に付く召喚の制限。 */
+    /** 旧データ互換。読み込み時に [playLocks] へ移す。 */
     val summonLocks: List<SummonLock> = emptyList(),
+    /** この効果の発動に付く【制限】の縛り。 */
+    val playLocks: List<PlayLock> = emptyList(),
     /**
      * 「この効果の発動に対して〜はカードの効果を発動できない」。
      * null なら普通どおり割り込める。
@@ -807,8 +844,10 @@ data class EffectText(
     val costs: List<Cost> = emptyList(),
     /** 全ての効果をまとめて数える制限。 */
     val limits: List<UsageLimit> = emptyList(),
-    /** どの効果を発動しても掛かる召喚の制限。 */
+    /** 旧データ互換。読み込み時に [playLocks] へ移す。 */
     val summonLocks: List<SummonLock> = emptyList(),
+    /** どの効果を発動しても掛かる【制限】の縛り。 */
+    val playLocks: List<PlayLock> = emptyList(),
     /** どの効果を発動しても、その発動に対して割り込めなくする指定。 */
     val noResponseFrom: PlayerRef? = null,
     /** 【発動後】。null なら [AfterActivation.DEFAULT]（墓地へ送る）。 */
@@ -851,9 +890,9 @@ data class EffectText(
         else emptyList()
     }
 
-    /** [index] 番目の効果を発動したときに掛かる召喚の制限（共通指定を含む）。 */
-    fun summonLocksFor(index: Int): List<SummonLock> =
-        summonLocks + clauses.getOrNull(index)?.summonLocks.orEmpty()
+    /** [index] 番目の効果を発動したときに掛かる【制限】の縛り（共通指定を含む）。 */
+    fun playLocksFor(index: Int): List<PlayLock> =
+        playLocks + clauses.getOrNull(index)?.playLocks.orEmpty()
 
     /** [index] 番目の効果の発動に対して、割り込めなくなる側。 */
     fun noResponseFor(index: Int): PlayerRef? =

@@ -80,10 +80,10 @@ class CountRestrictRevealTest {
             categoryIds = listOf(valis),
             effect = EffectText(
                 locations = listOf(ActivationLocation.FIELD),
-                summonLocks = listOf(
-                    SummonLock(
+                playLocks = listOf(
+                    PlayLock(
                         who = PlayerRef.SELF,
-                        summon = SummonKind.SPECIAL,
+                        kind = RestrictionKind.SPECIAL_SUMMON,
                         filters = listOf(CategoryFilter(valis)),
                         except = true
                     )

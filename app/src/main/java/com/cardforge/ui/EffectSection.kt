@@ -100,14 +100,14 @@ fun EffectEditorSection(
                 }
             )
 
-            SummonLockList(
-                locks = effect.summonLocks,
+            PlayLockList(
+                locks = effect.playLocks,
                 master = master,
-                label = "【制限】召喚の縛り（効果ではないので無効にされても残る）",
+                label = "【制限】発動に付く縛り（効果ではないので無効にされても残る）",
                 onAdd = { lockSlot = EditSlot() },
                 onEdit = { lockSlot = EditSlot(itemIndex = it) },
                 onRemove = { index ->
-                    onChange(effect.copy(summonLocks = effect.summonLocks.removedAt(index)))
+                    onChange(effect.copy(playLocks = effect.playLocks.removedAt(index)))
                 }
             )
 
@@ -212,7 +212,7 @@ fun EffectEditorSection(
     }
 
     lockSlot?.let { slot ->
-        SummonLockDialog(
+        PlayLockDialog(
             master = master,
             initial = slot.itemIndex?.let { effect.locksAt(slot).getOrNull(it) },
             onDismiss = { lockSlot = null },
@@ -271,8 +271,8 @@ private fun EffectText.costsAt(slot: EditSlot): List<Cost> =
 private fun EffectText.limitsAt(slot: EditSlot): List<UsageLimit> =
     if (slot.clauseIndex == null) limits else clauses[slot.clauseIndex].limits
 
-private fun EffectText.locksAt(slot: EditSlot): List<SummonLock> =
-    if (slot.clauseIndex == null) summonLocks else clauses[slot.clauseIndex].summonLocks
+private fun EffectText.locksAt(slot: EditSlot): List<PlayLock> =
+    if (slot.clauseIndex == null) playLocks else clauses[slot.clauseIndex].playLocks
 
 private fun EffectText.actionsAt(slot: EditSlot): List<Action> = when {
     slot.clauseIndex == null -> emptyList()
@@ -311,10 +311,10 @@ private fun EffectText.withLimits(
 
 private fun EffectText.withLocks(
     slot: EditSlot,
-    block: (List<SummonLock>) -> List<SummonLock>
+    block: (List<PlayLock>) -> List<PlayLock>
 ): EffectText =
-    if (slot.clauseIndex == null) copy(summonLocks = block(summonLocks))
-    else updateClause(slot.clauseIndex) { it.copy(summonLocks = block(it.summonLocks)) }
+    if (slot.clauseIndex == null) copy(playLocks = block(playLocks))
+    else updateClause(slot.clauseIndex) { it.copy(playLocks = block(it.playLocks)) }
 
 private fun EffectText.withActions(
     slot: EditSlot,
@@ -435,13 +435,13 @@ private fun ClauseEditor(
             onRemove = { onChange(clause.copy(limits = clause.limits.removedAt(it))) }
         )
 
-        SummonLockList(
-            locks = clause.summonLocks,
+        PlayLockList(
+            locks = clause.playLocks,
             master = master,
-            label = "この効果だけの【制限】召喚の縛り",
+            label = "この効果だけの【制限】発動に付く縛り",
             onAdd = { onLockSlot(slot(null, null)) },
             onEdit = { onLockSlot(slot(null, it)) },
-            onRemove = { onChange(clause.copy(summonLocks = clause.summonLocks.removedAt(it))) }
+            onRemove = { onChange(clause.copy(playLocks = clause.playLocks.removedAt(it))) }
         )
 
         NoResponsePicker(
@@ -709,8 +709,8 @@ private fun LimitList(
 }
 
 @Composable
-private fun SummonLockList(
-    locks: List<SummonLock>,
+private fun PlayLockList(
+    locks: List<PlayLock>,
     master: MasterData,
     label: String,
     onAdd: () -> Unit,
@@ -719,8 +719,8 @@ private fun SummonLockList(
 ) {
     EditableList(
         label = label,
-        lines = locks.map { EffectTextRenderer.summonLockToText(it, master) },
-        addLabel = "＋ 召喚の制限を追加",
+        lines = locks.map { EffectTextRenderer.playLockToText(it, master) },
+        addLabel = "＋ 制限を追加",
         onAdd = onAdd,
         onEdit = onEdit,
         onRemove = onRemove

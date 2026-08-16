@@ -43,6 +43,7 @@ private enum class ActionType(val label: String, val usesScope: Boolean) {
     ADD_COUNTER("カウンターを乗せる", true),
     REMOVE_COUNTER("カウンターを取り除く", true),
     REPLACE_DESTINATION("墓地へ送られる代わりに（永続向き）", true),
+    RESTRICT("〜できなくする（制限を掛ける）", false),
     REVEAL("カードを相手に見せる（公開する）", true),
     NEGATE("発動を無効にし破壊する", false)
 }
@@ -73,6 +74,7 @@ private fun typeOf(action: Action): ActionType = when (action) {
     is AddCounterAction -> ActionType.ADD_COUNTER
     is RemoveCounterAction -> ActionType.REMOVE_COUNTER
     is ReplaceDestinationAction -> ActionType.REPLACE_DESTINATION
+    is RestrictAction -> ActionType.RESTRICT
     // 旧データ用。編集画面では【制限】として扱う。
     is RestrictSummonAction -> ActionType.NEGATE
     is RevealAction -> ActionType.REVEAL
@@ -225,6 +227,8 @@ fun ActionDialog(
     var replaceTo by remember {
         mutableStateOf((initial as? ReplaceDestinationAction)?.to ?: MoveDestination.BANISHED)
     }
+    var restrict by remember { mutableStateOf((initial as? RestrictAction) ?: RestrictAction()) }
+    var showRestrictFilter by remember { mutableStateOf(false) }
     var protectionFrom by remember {
         mutableStateOf((initial as? GrantProtectionAction)?.from ?: PlayerRef.OPPONENT)
     }
@@ -273,6 +277,7 @@ fun ActionDialog(
         ActionType.ADD_COUNTER -> AddCounterAction(scope, counterId, counterAmount)
         ActionType.REMOVE_COUNTER -> RemoveCounterAction(scope, counterId, counterAmount)
         ActionType.REPLACE_DESTINATION -> ReplaceDestinationAction(scope, replaceTo)
+        ActionType.RESTRICT -> restrict
         ActionType.REVEAL -> RevealAction(scope, revealDuration)
         ActionType.NEGATE -> NegateAction
     }
@@ -592,6 +597,53 @@ fun ActionDialog(
                         )
                     }
 
+                    ActionType.RESTRICT -> {
+                        HorizontalDivider()
+                        Dropdown(
+                            "制限を受ける側", PlayerRef.all, restrict.who, { it.label }
+                        ) { restrict = restrict.copy(who = it) }
+                        Dropdown(
+                            "できなくすること", RestrictionKind.all, restrict.kind, { it.label }
+                        ) { restrict = restrict.copy(kind = it) }
+                        Dropdown(
+                            "続く長さ（発動する効果のとき）",
+                            RestrictionDuration.all,
+                            restrict.duration,
+                            { it.label }
+                        ) { restrict = restrict.copy(duration = it) }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(
+                                checked = restrict.except,
+                                onCheckedChange = { restrict = restrict.copy(except = it) }
+                            )
+                            Text("指定したカード「以外」を対象にする")
+                        }
+                        Text(
+                            "対象のカードの条件（空なら${restrict.kind.defaultNoun}全体）",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        FlowRowSimple {
+                            restrict.filters.forEachIndexed { index, filter ->
+                                Chip(filterChipLabel(filter, master) + " ✕", selected = true) {
+                                    restrict = restrict.copy(
+                                        filters = restrict.filters.toMutableList()
+                                            .also { it.removeAt(index) }
+                                    )
+                                }
+                            }
+                            Chip("＋ 条件を追加") { showRestrictFilter = true }
+                        }
+                        Text(
+                            "【発動タイプ】を「永続」にすると、このカードが【場所】にある間ずっと" +
+                                "掛かります。発動する効果に書くと、上で選んだ長さだけ掛かります。\n" +
+                                "効果ではなく発動そのものに付けたい場合は、【制限】の欄に書いてください" +
+                                "（無効にされても残ります）。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
                     ActionType.ADVANCE_PHASE -> {
                         HorizontalDivider()
                         Dropdown("どう進めるか", PhaseAdvance.all, advance, { it.label }) {
@@ -643,6 +695,17 @@ fun ActionDialog(
         confirmButton = { TextButton(onClick = { onConfirm(build()) }) { Text("決定") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("キャンセル") } }
     )
+
+    if (showRestrictFilter) {
+        FilterDialog(
+            master = master,
+            onDismiss = { showRestrictFilter = false },
+            onConfirm = {
+                restrict = restrict.copy(filters = restrict.filters + it)
+                showRestrictFilter = false
+            }
+        )
+    }
 
     // 与える効果の中身は、同じダイアログをもう一段開いて組み立てる。
     if (addingGrantedAction || showGrantedAction != null) {
@@ -1336,23 +1399,23 @@ fun LimitDialog(
  * 効果ではなく発動そのものに付く制限なので、効果を無効にされても掛かったままになる。
  */
 @Composable
-fun SummonLockDialog(
+fun PlayLockDialog(
     master: MasterData,
-    initial: SummonLock? = null,
+    initial: PlayLock? = null,
     onDismiss: () -> Unit,
-    onConfirm: (SummonLock) -> Unit
+    onConfirm: (PlayLock) -> Unit
 ) {
     var who by remember { mutableStateOf(initial?.who ?: PlayerRef.SELF) }
-    var summon by remember { mutableStateOf(initial?.summon ?: SummonKind.SPECIAL) }
+    var kind by remember { mutableStateOf(initial?.kind ?: RestrictionKind.SPECIAL_SUMMON) }
     var filters by remember { mutableStateOf(initial?.filters ?: emptyList()) }
     var except by remember { mutableStateOf(initial?.except ?: true) }
     var showFilter by remember { mutableStateOf(false) }
 
-    fun build() = SummonLock(who, summon, filters, except)
+    fun build() = PlayLock(who, kind, filters, except)
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(if (initial == null) "召喚の制限を追加" else "召喚の制限を編集") },
+        title = { Text(if (initial == null) "制限を追加" else "制限を編集") },
         text = {
             Column(
                 Modifier
@@ -1367,13 +1430,13 @@ fun SummonLockDialog(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Dropdown("制限を受ける側", PlayerRef.all, who, { it.label }) { who = it }
-                Dropdown("制限する召喚", SummonKind.all, summon, { it.label }) { summon = it }
+                Dropdown("できなくすること", RestrictionKind.all, kind, { it.label }) { kind = it }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Checkbox(checked = except, onCheckedChange = { except = it })
-                    Text("指定したカード「以外」を出せなくする")
+                    Text("指定したカード「以外」を対象にする")
                 }
                 Text(
-                    "対象のカードの条件（空ならモンスター全体）",
+                    "対象のカードの条件（空なら${kind.defaultNoun}全体）",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -1389,7 +1452,7 @@ fun SummonLockDialog(
                 HorizontalDivider()
                 Surface(color = Surface2, shape = MaterialTheme.shapes.small) {
                     Text(
-                        EffectTextRenderer.summonLockToText(build(), master) + "。",
+                        EffectTextRenderer.playLockToText(build(), master) + "。",
                         style = MaterialTheme.typography.bodyMedium,
                         modifier = Modifier
                             .fillMaxWidth()

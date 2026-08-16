@@ -40,10 +40,10 @@ object DefaultData {
                 effect = EffectText(
                     locations = listOf(ActivationLocation.FIELD),
                     // 効果ではなく発動そのものに付く制限。無効にされても掛かったまま。
-                    summonLocks = listOf(
-                        SummonLock(
+                    playLocks = listOf(
+                        PlayLock(
                             who = PlayerRef.SELF,
-                            summon = SummonKind.SPECIAL,
+                            kind = RestrictionKind.SPECIAL_SUMMON,
                             filters = listOf(CategoryFilter(araragi)),
                             except = true
                         )

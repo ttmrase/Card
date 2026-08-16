@@ -168,21 +168,43 @@ object EffectTextRenderer {
     fun noResponseToText(from: PlayerRef): String =
         "この効果の発動に対して${from.label}はカードの効果を発動できない"
 
-    /** 「このカードを発動するターン、〜できない」という【制限】の文。 */
-    fun summonLockToText(lock: SummonLock, master: MasterData): String {
-        val noun =
-            if (lock.filters.isEmpty()) "モンスター"
-            else filtersToNoun(lock.filters, master, ZoneType.MONSTER_ZONE)
-        val target = if (lock.except) "${noun}以外のモンスター" else noun
-        return "このカードを発動するターン、${lock.who.label}は${target}を${lock.summon.label}できない"
+    /** 「〜以外のモンスター」のような、制限の対象を表す名詞。 */
+    fun restrictionTarget(
+        kind: RestrictionKind,
+        filters: List<CardFilter>,
+        except: Boolean,
+        master: MasterData
+    ): String {
+        if (filters.isEmpty()) return kind.defaultNoun
+        val noun = filtersToNoun(filters, master, ZoneType.MONSTER_ZONE)
+        return if (except) "${noun}以外の${kind.defaultNoun}" else noun
     }
 
+    /** 「相手はモンスターを特殊召喚できない」という制限の一文。 */
+    fun restrictionSentence(
+        who: String,
+        kind: RestrictionKind,
+        filters: List<CardFilter>,
+        except: Boolean,
+        master: MasterData
+    ): String = kind.template
+        .replace("{who}", who)
+        .replace("{target}", restrictionTarget(kind, filters, except, master))
+
+    /** 「このカードを発動するターン、〜できない」という【制限】の文。 */
+    fun playLockToText(lock: PlayLock, master: MasterData): String =
+        "このカードを発動するターン、" +
+            restrictionSentence(lock.who.label, lock.kind, lock.filters, lock.except, master)
+
     /** 旧データ用。述語として書かれていた召喚制限の文。 */
-    fun restrictSummonToText(action: RestrictSummonAction, master: MasterData): String =
-        summonLockToText(
-            SummonLock(action.who, action.summon, action.filters, action.except),
-            master
-        )
+    fun restrictSummonToText(action: RestrictSummonAction, master: MasterData): String {
+        val kind = when (action.summon) {
+            SummonKind.NORMAL -> RestrictionKind.NORMAL_SUMMON
+            SummonKind.SPECIAL -> RestrictionKind.SPECIAL_SUMMON
+            SummonKind.ANY -> RestrictionKind.ANY_SUMMON
+        }
+        return playLockToText(PlayLock(action.who, kind, action.filters, action.except), master)
+    }
 
     /** 「手札を相手に見せる」という文。 */
     fun revealToText(scope: CardScope, duration: RevealDuration, master: MasterData): String {
@@ -254,6 +276,11 @@ object EffectTextRenderer {
 
     fun actionToText(action: Action, master: MasterData): String = when (action) {
         is GrantEffectAction -> grantEffectToText(action, master)
+
+        is RestrictAction ->
+            "${action.duration.label}、" + restrictionSentence(
+                action.who.label, action.kind, action.filters, action.except, master
+            )
 
         is AddCounterAction ->
             scopeToText(action.scope, master) + selectionParticle(action.scope) +
@@ -555,7 +582,7 @@ object EffectTextRenderer {
             lines += "【コスト】" + effect.costs.joinToString("、") { costToText(it, master) }
         }
         val cardLimits = effect.limits.map { limitToText(it, master, cardWide = true) } +
-            effect.summonLocks.map { summonLockToText(it, master) } +
+            effect.playLocks.map { playLockToText(it, master) } +
             listOfNotNull(effect.noResponseFrom?.let { noResponseToText(it) })
         if (cardLimits.isNotEmpty()) {
             lines += "【制限】" + cardLimits.joinToString("、")
@@ -585,7 +612,7 @@ object EffectTextRenderer {
             if (clause.costs.isNotEmpty()) {
                 prefixes += "【コスト】" + clause.costs.joinToString("、") { costToText(it, master) }
             }
-            val clauseLocks = clause.summonLocks.map { summonLockToText(it, master) } +
+            val clauseLocks = clause.playLocks.map { playLockToText(it, master) } +
                 listOfNotNull(clause.noResponseFrom?.let { noResponseToText(it) })
             if (clauseLocks.isNotEmpty()) {
                 prefixes += "【制限】" + clauseLocks.joinToString("、")
@@ -675,6 +702,10 @@ object EffectTextRenderer {
                 val what = protectionLabel(action)
                 if (who.isEmpty()) what else "${who}は$what"
             }
+
+            is RestrictAction -> restrictionSentence(
+                action.who.label, action.kind, action.filters, action.except, master
+            )
 
             is PreventAttackAction -> {
                 val who = subject(action.scope)
