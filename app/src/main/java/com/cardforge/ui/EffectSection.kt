@@ -404,7 +404,9 @@ private fun ClauseEditor(
         Text(
             "「発動時」はこのカード自体を発動したときにだけ処理されます。" +
                 "「永続」は発動せず、このカードが【場所】にある限り適用されます。\n" +
-                "【条件】に「〜した場合」を入れると、その出来事で発動する効果になります。",
+                "【条件】に「〜した場合」を入れると、その出来事で発動する効果になり、" +
+                "カードには【任意】【強制】と表示されます。" +
+                "「強制」は誘発即時効果と同じ扱いになり、相手ターンでも発動します。",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )

@@ -151,12 +151,17 @@ fun DeckEditScreen(
         mutableStateOf(original ?: Deck(id = newId(), name = "新しいデッキ"))
     }
     var query by remember { mutableStateOf("") }
+    var kindFilter by remember { mutableStateOf<CardKind?>(null) }
+    var categoryFilter by remember { mutableStateOf<String?>(null) }
     var preview by remember { mutableStateOf<CardDef?>(null) }
 
     val counts = deck.cardIds.groupingBy { it }.eachCount()
     // トークンはデッキに入れられない。
-    val visible = library.cards.filter {
-        !it.isToken && (query.isBlank() || it.name.contains(query, ignoreCase = true))
+    val visible = library.cards.filter { card ->
+        !card.isToken &&
+            (kindFilter == null || card.kind == kindFilter) &&
+            (categoryFilter == null || categoryFilter in card.categoryIds) &&
+            (query.isBlank() || card.name.contains(query, ignoreCase = true))
     }
 
     fun add(cardId: String) {
@@ -212,10 +217,38 @@ fun DeckEditScreen(
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
+                FlowRowSimple {
+                    Chip("すべて", selected = kindFilter == null) { kindFilter = null }
+                    CardKind.all.forEach { kind ->
+                        Chip(kind.label, selected = kindFilter == kind, color = kindColor(kind)) {
+                            kindFilter = if (kindFilter == kind) null else kind
+                        }
+                    }
+                }
+                // カテゴリでの絞り込み。カテゴリを1つも作っていなければ出さない。
+                if (master.categories.isNotEmpty()) {
+                    FlowRowSimple {
+                        Chip("カテゴリ：すべて", selected = categoryFilter == null) {
+                            categoryFilter = null
+                        }
+                        master.categories.forEach { entry ->
+                            Chip(
+                                text = "「${entry.name}」",
+                                selected = categoryFilter == entry.id,
+                                color = Gold
+                            ) {
+                                categoryFilter =
+                                    if (categoryFilter == entry.id) null else entry.id
+                            }
+                        }
+                    }
+                }
             }
 
             if (library.cards.isEmpty()) {
                 EmptyHint("カードがありません。先にカードを作成してください。")
+            } else if (visible.isEmpty()) {
+                EmptyHint("絞り込みに当てはまるカードがありません。")
             } else {
                 LazyColumn(
                     contentPadding = PaddingValues(16.dp),

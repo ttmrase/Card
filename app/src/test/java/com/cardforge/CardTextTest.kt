@@ -141,7 +141,8 @@ class CardTextTest {
         )
         val text = EffectTextRenderer.render(card, master)
         assertEquals(
-            "①：【条件】このカードが破壊された場合 ⇒ 相手に800ポイントのダメージを与える。",
+            "①：【強制】 ／ 【条件】このカードが破壊された場合 ⇒ " +
+                "相手に800ポイントのダメージを与える。",
             text
         )
         // モンスターの既定の【発動後】は「そのまま残す」なので書かれない。
@@ -149,7 +150,7 @@ class CardTextTest {
     }
 
     @Test
-    fun `optional effects read as can activate and mandatory ones do not`() {
+    fun `optional and mandatory effects are labelled in the first bracket`() {
         fun card(mode: ActivationMode) = CardDef(
             id = "x", name = "テスト", kind = CardKind.MONSTER,
             effect = EffectText(
@@ -164,14 +165,12 @@ class CardTextTest {
                 )
             )
         )
-        assertTrue(
-            EffectTextRenderer.render(card(ActivationMode.OPTIONAL), master)
-                .endsWith("ドローできる。")
-        )
-        assertTrue(
-            EffectTextRenderer.render(card(ActivationMode.MANDATORY), master)
-                .endsWith("ドローする。")
-        )
+        val optional = EffectTextRenderer.render(card(ActivationMode.OPTIONAL), master)
+        assertTrue(optional.startsWith("①：【任意】"))
+        assertTrue(optional.endsWith("ドローする。"))
+        val mandatory = EffectTextRenderer.render(card(ActivationMode.MANDATORY), master)
+        assertTrue(mandatory.startsWith("①：【強制】"))
+        assertTrue(mandatory.endsWith("ドローする。"))
     }
 
     @Test

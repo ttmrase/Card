@@ -635,5 +635,6 @@ private val SELF_RESTRICTIONS = listOf(
     RestrictionKind.CHANGE_POSITION,
     RestrictionKind.TRIBUTE,
     RestrictionKind.DEAL_BATTLE_DAMAGE,
-    RestrictionKind.TAKE_BATTLE_DAMAGE
+    RestrictionKind.TAKE_BATTLE_DAMAGE,
+    RestrictionKind.BE_ATTACKED
 )

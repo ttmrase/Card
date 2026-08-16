@@ -46,6 +46,11 @@ data class PositionFilter(val position: Position) : CardFilter
 @SerialName("name")
 data class NameFilter(val text: String) : CardFilter
 
+/** 効果を持つ／持たないカードを絞る。 */
+@Serializable
+@SerialName("hasEffect")
+data class HasEffectFilter(val hasEffect: Boolean = false) : CardFilter
+
 /** その条件に当てはまらないカード。「〜を除く」と書きたいときに使う。 */
 @Serializable
 @SerialName("notFilter")
@@ -337,6 +342,14 @@ data class PermitAction(
     val duration: RestrictionDuration = RestrictionDuration.THIS_TURN
 ) : Action
 
+/** 通常召喚できる回数を増やす。 */
+@Serializable
+@SerialName("extraSummon")
+data class ExtraSummonAction(
+    val who: PlayerRef = PlayerRef.SELF,
+    val count: Int = 1
+) : Action
+
 /** カードにカウンターを乗せる。 */
 @Serializable
 @SerialName("addCounter")
@@ -598,10 +611,17 @@ data class CounterCondition(
     val value: Int = 1
 ) : Condition
 
-/** 指定したフェイズにだけ発動できる。 */
+/**
+ * 指定したフェイズにだけ発動できる。
+ * [who] で「自分のターンの」「相手のターンの」と書き分けられる。
+ */
 @Serializable
 @SerialName("phase")
-data class PhaseCondition(val phases: List<Phase> = emptyList()) : Condition
+data class PhaseCondition(
+    val phases: List<Phase> = emptyList(),
+    /** どちらのターンか。未指定（null）なら、カード種別の既定に従う。 */
+    val who: PlayerRef? = null
+) : Condition
 
 @Serializable
 @SerialName("zoneCount")
@@ -951,7 +971,11 @@ data class EffectText(
 
     /** [index] 番目の効果が発動できるフェイズ。指定が無ければ空。 */
     fun phasesFor(index: Int): List<Phase> =
-        flatten(conditionsFor(index)).filterIsInstance<PhaseCondition>().flatMap { it.phases }
+        phaseConditionsFor(index).flatMap { it.phases }
+
+    /** [index] 番目の効果が持つフェイズ指定。 */
+    fun phaseConditionsFor(index: Int): List<PhaseCondition> =
+        flatten(conditionsFor(index)).filterIsInstance<PhaseCondition>()
 
     /**
      * [index] 番目の効果が持つ誘発条件。

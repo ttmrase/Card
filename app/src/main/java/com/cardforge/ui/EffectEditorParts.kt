@@ -42,6 +42,8 @@ fun filterChipLabel(filter: CardFilter, master: MasterData): String = when (filt
     is NotFilter -> filterChipLabel(filter.filter, master) + "を除く"
     is AffectedNameFilter ->
         if (filter.exclude) "直前に扱ったカードと同名を除く" else "直前に扱ったカードと同名"
+
+    is HasEffectFilter -> if (filter.hasEffect) "効果を持つ" else "効果を持たない"
 }
 
 private enum class FilterType(val label: String) {
@@ -55,6 +57,8 @@ private enum class FilterType(val label: String) {
     POSITION("表示形式"),
     NAME("カード名"),
     SUMMONED_BY_THIS("このカードの効果で特殊召喚された"),
+    HAS_EFFECT("効果を持つ"),
+    NO_EFFECT("効果を持たない"),
     ANY_OF("いずれかに当てはまる（または）"),
     NOT("〜を除く（当てはまらないカード）"),
     AFFECTED_NAME("直前に扱ったカードと同名"),
@@ -92,6 +96,8 @@ fun FilterDialog(
         FilterType.POSITION -> PositionFilter(position)
         FilterType.NAME -> if (name.isBlank()) null else NameFilter(name.trim())
         FilterType.SUMMONED_BY_THIS -> SummonedByThisFilter()
+        FilterType.HAS_EFFECT -> HasEffectFilter(hasEffect = true)
+        FilterType.NO_EFFECT -> HasEffectFilter(hasEffect = false)
         FilterType.ANY_OF -> if (anyOf.isEmpty()) null else AnyFilter(anyOf)
         FilterType.NOT -> excluded?.let { NotFilter(it) }
         FilterType.AFFECTED_NAME -> AffectedNameFilter(exclude = false)
@@ -191,6 +197,13 @@ fun FilterDialog(
                         "直前の処理で扱ったカード（破壊した・墓地へ送った等）と" +
                             "同じ名前かどうかで絞り込みます。" +
                             "「破壊して、デッキから同名カードを」のような効果に使います。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    FilterType.HAS_EFFECT, FilterType.NO_EFFECT -> Text(
+                        "効果が1つも書かれていないカード（いわゆる通常モンスター）かどうかで" +
+                            "絞り込みます。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -434,9 +447,10 @@ fun CardScopeEditor(
 /** 折り返しながらチップを並べるための薄いラッパー。 */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun FlowRowSimple(content: @Composable () -> Unit) {
+fun FlowRowSimple(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
     // FlowRowScope を公開シグネチャに出さないので、呼び出し側は opt-in 不要。
     FlowRow(
+        modifier = modifier,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {

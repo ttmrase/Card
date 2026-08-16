@@ -280,7 +280,8 @@ enum class RestrictionKind(
     ),
     TAKE_BATTLE_DAMAGE(
         "戦闘ダメージを受けない", "{who}は{target}との戦闘では戦闘ダメージを受けない", "モンスター"
-    );
+    ),
+    BE_ATTACKED("攻撃対象にできない", "{who}は{target}を攻撃対象にできない", "モンスター");
 
     /** 召喚に関する制限かどうか。 */
     val isSummon: Boolean
@@ -303,6 +304,11 @@ enum class PermissionKind(
     DIRECT_ATTACK(
         "相手モンスターがいても直接攻撃できる",
         "{who}の{target}は、相手にモンスターがいても直接攻撃できる",
+        "モンスター"
+    ),
+    MUST_BE_ATTACKED(
+        "相手はこのカードしか攻撃できない",
+        "{who}の{target}がいる場合、相手は他のモンスターを攻撃できない",
         "モンスター"
     );
 
@@ -391,11 +397,11 @@ enum class BranchMode(val label: String, val lead: String) {
  * [CONTINUOUS] は発動を必要とせず、【場所】にある間ずっと適用される永続効果になる。
  */
 @Serializable
-enum class ActivationMode(val label: String, val suffix: String) {
-    OPTIONAL("発動できる（任意）", "できる"),
-    MANDATORY("発動する（強制）", "する"),
-    ON_ACTIVATION("発動時（このカードの発動時のみ処理する）", "する"),
-    CONTINUOUS("永続（発動せず、その場所にある限り適用）", "する");
+enum class ActivationMode(val label: String) {
+    OPTIONAL("任意（発動するか選べる）"),
+    MANDATORY("強制（必ず発動する・相手ターンでも発動する）"),
+    ON_ACTIVATION("発動時（このカードの発動時のみ処理する）"),
+    CONTINUOUS("永続（発動せず、その場所にある限り適用）");
 
     val isContinuous: Boolean get() = this == CONTINUOUS
 

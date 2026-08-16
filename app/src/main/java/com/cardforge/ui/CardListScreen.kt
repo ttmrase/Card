@@ -36,6 +36,7 @@ fun CardListScreen(
     val library = repository.library
     var query by remember { mutableStateOf("") }
     var kindFilter by remember { mutableStateOf<CardKind?>(null) }
+    var categoryFilter by remember { mutableStateOf<String?>(null) }
     var showTokens by remember { mutableStateOf(false) }
     var pendingDelete by remember { mutableStateOf<CardDef?>(null) }
     var preview by remember { mutableStateOf<CardDef?>(null) }
@@ -85,6 +86,7 @@ fun CardListScreen(
     val visible = library.cards.filter { card ->
         card.isToken == showTokens &&
             (kindFilter == null || card.kind == kindFilter) &&
+            (categoryFilter == null || categoryFilter in card.categoryIds) &&
             (query.isBlank() || card.name.contains(query, ignoreCase = true))
     }
 
@@ -139,6 +141,24 @@ fun CardListScreen(
                 Chip("トークン", selected = showTokens, color = Gold) {
                     showTokens = !showTokens
                     kindFilter = null
+                }
+            }
+
+            // カテゴリでの絞り込み。カテゴリを1つも作っていなければ出さない。
+            if (library.master.categories.isNotEmpty()) {
+                FlowRowSimple(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+                    Chip("カテゴリ：すべて", selected = categoryFilter == null) {
+                        categoryFilter = null
+                    }
+                    library.master.categories.forEach { entry ->
+                        Chip(
+                            text = "「${entry.name}」",
+                            selected = categoryFilter == entry.id,
+                            color = Gold
+                        ) {
+                            categoryFilter = if (categoryFilter == entry.id) null else entry.id
+                        }
+                    }
                 }
             }
 

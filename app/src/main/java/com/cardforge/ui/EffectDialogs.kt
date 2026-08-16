@@ -46,6 +46,7 @@ private enum class ActionType(val label: String, val usesScope: Boolean) {
     RESTRICT("〜できなくする（制限を掛ける）", false),
     PERMIT("〜できるようにする（許可を与える）", false),
     REVEAL("カードを相手に見せる（公開する）", true),
+    EXTRA_SUMMON("通常召喚できる回数を増やす", false),
     NEGATE("発動を無効にし破壊する", false)
 }
 
@@ -80,6 +81,7 @@ private fun typeOf(action: Action): ActionType = when (action) {
     // 旧データ用。編集画面では【制限】として扱う。
     is RestrictSummonAction -> ActionType.NEGATE
     is RevealAction -> ActionType.REVEAL
+    is ExtraSummonAction -> ActionType.EXTRA_SUMMON
     NegateAction -> ActionType.NEGATE
 }
 
@@ -132,6 +134,7 @@ fun ActionDialog(
                 is RecoverAction -> initial.who
                 is DiscardAction -> initial.who
                 is MillAction -> initial.who
+                is ExtraSummonAction -> initial.who
                 else -> PlayerRef.SELF
             }
         )
@@ -236,6 +239,9 @@ fun ActionDialog(
     var protectionFrom by remember {
         mutableStateOf((initial as? GrantProtectionAction)?.from ?: PlayerRef.OPPONENT)
     }
+    var extraSummons by remember {
+        mutableIntStateOf((initial as? ExtraSummonAction)?.count ?: 1)
+    }
     var showGrantedAction by remember { mutableStateOf<Int?>(null) }
     var addingGrantedAction by remember { mutableStateOf(false) }
     var countValue by remember {
@@ -284,6 +290,7 @@ fun ActionDialog(
         ActionType.RESTRICT -> restrict
         ActionType.PERMIT -> permit
         ActionType.REVEAL -> RevealAction(scope, revealDuration)
+        ActionType.EXTRA_SUMMON -> ExtraSummonAction(who, extraSummons.coerceAtLeast(1))
         ActionType.NEGATE -> NegateAction
     }
 
@@ -688,6 +695,17 @@ fun ActionDialog(
                         }
                     }
 
+                    ActionType.EXTRA_SUMMON -> {
+                        HorizontalDivider()
+                        Dropdown("誰が", PlayerRef.all, who, { it.label }) { who = it }
+                        NumberField("増やす回数", extraSummons) { extraSummons = it }
+                        Text(
+                            "そのターンだけ、通常召喚・セットできる回数が増えます。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
                     ActionType.ADVANCE_PHASE -> {
                         HorizontalDivider()
                         Dropdown("どう進めるか", PhaseAdvance.all, advance, { it.label }) {
@@ -899,6 +917,7 @@ fun ConditionDialog(
         mutableStateOf((initial as? ZoneCountCondition)?.zone ?: ZoneType.HAND)
     }
     var phases by remember { mutableStateOf((initial as? PhaseCondition)?.phases ?: emptyList()) }
+    var phaseWho by remember { mutableStateOf((initial as? PhaseCondition)?.who) }
     var selfZones by remember {
         mutableStateOf((initial as? SelfZoneCondition)?.zones ?: emptyList())
     }
@@ -919,7 +938,7 @@ fun ConditionDialog(
             CounterCondition(counterScope, counterId, counterCmp, counterValue)
 
         ConditionType.SELF_ZONE -> SelfZoneCondition(selfZones)
-        ConditionType.PHASE -> PhaseCondition(phases)
+        ConditionType.PHASE -> PhaseCondition(phases, phaseWho)
         ConditionType.EXISTS -> CardExistsCondition(scope, atLeast.coerceAtLeast(1), negate)
         ConditionType.LIFE -> LifeCondition(who, cmp, value)
         ConditionType.ZONE_COUNT -> ZoneCountCondition(who, zone, cmp, value)
@@ -991,12 +1010,18 @@ fun ConditionDialog(
                                 checked = eventSelfOnly,
                                 onCheckedChange = { eventSelfOnly = it }
                             )
-                            Text("このカード自身が対象のときだけ")
+                            Text(
+                                if (event.isPlayerEvent) "このカードが原因のときだけ"
+                                else "このカード自身が対象のときだけ"
+                            )
+                        }
+                        if (!eventSelfOnly || event.isPlayerEvent) {
+                            Dropdown(
+                                if (eventSelfOnly) "誰に起きた出来事か" else "誰の側の出来事か",
+                                PlayerRef.all, eventWho, { it.label }
+                            ) { eventWho = it }
                         }
                         if (!eventSelfOnly) {
-                            Dropdown("誰の側の出来事か", PlayerRef.all, eventWho, { it.label }) {
-                                eventWho = it
-                            }
                             if (!event.isPlayerEvent) {
                                 Text(
                                     "対象のカードを限定する（任意）",
@@ -1103,6 +1128,24 @@ fun ConditionDialog(
                                 }
                             }
                         }
+                        Text("どちらのターンか", style = MaterialTheme.typography.labelLarge)
+                        FlowRowSimple {
+                            Chip("指定なし", selected = phaseWho == null) { phaseWho = null }
+                            Chip("自分のターン", selected = phaseWho == PlayerRef.SELF) {
+                                phaseWho = PlayerRef.SELF
+                            }
+                            Chip("相手のターン", selected = phaseWho == PlayerRef.OPPONENT) {
+                                phaseWho = PlayerRef.OPPONENT
+                            }
+                            Chip("お互いのターン", selected = phaseWho == PlayerRef.BOTH) {
+                                phaseWho = PlayerRef.BOTH
+                            }
+                        }
+                        Text(
+                            "「指定なし」なら、罠は相手ターンでも、それ以外は自分のターンに発動できます。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
 
                     ConditionType.EXISTS -> {

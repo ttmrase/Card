@@ -208,6 +208,12 @@ class DynamicValueTest {
             "エンドフェイズである",
             EffectTextRenderer.conditionToText(PhaseCondition(listOf(Phase.END)), MasterData())
         )
+        assertEquals(
+            "相手のターンのエンドフェイズである",
+            EffectTextRenderer.conditionToText(
+                PhaseCondition(listOf(Phase.END), PlayerRef.OPPONENT), MasterData()
+            )
+        )
     }
 
     // --- テキストの手直し -------------------------------------------------

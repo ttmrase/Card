@@ -154,8 +154,18 @@ class PlayerState(
     val spellTrapZones: SnapshotStateList<CardInstance?> =
         mutableStateListOf<CardInstance?>().apply { repeat(DeckRules.ZONE_COUNT) { add(null) } }
 
-    /** そのターンに通常召喚（セット含む）を使ったか。 */
-    var normalSummonUsed by mutableStateOf(false)
+    /** そのターンに通常召喚（セット含む）を使った回数。 */
+    var normalSummonsUsed by mutableIntStateOf(0)
+
+    /** そのターンに通常召喚できる回数。効果で増やせる。 */
+    var normalSummonLimit by mutableIntStateOf(1)
+
+    /** 通常召喚をもう使い切ったか。 */
+    var normalSummonUsed: Boolean
+        get() = normalSummonsUsed >= normalSummonLimit
+        set(value) {
+            normalSummonsUsed = if (value) normalSummonLimit else 0
+        }
 
     /** そのターンに発動した効果の記録（【制限】の判定に使う）。 */
     val activationsThisTurn: SnapshotStateList<ActivationRecord> = mutableStateListOf()

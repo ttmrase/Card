@@ -62,6 +62,9 @@ object EffectTextRenderer {
 
         val sb = StringBuilder()
 
+        filters.filterIsInstance<HasEffectFilter>().forEach {
+            sb.append(if (it.hasEffect) "効果を持つ" else "効果を持たない")
+        }
         filters.filterIsInstance<NotFilter>().forEach {
             sb.append(filtersToNoun(listOf(it.filter), master) + "以外の")
         }
@@ -214,6 +217,28 @@ object EffectTextRenderer {
         return kind.template.replace("{who}", who).replace("{target}", target)
     }
 
+    /** カード自身にずっと掛かる制限の一文。 */
+    fun selfRestrictionSentence(kind: RestrictionKind): String = when (kind) {
+        RestrictionKind.NORMAL_SUMMON -> "このカードは通常召喚できない"
+        RestrictionKind.SPECIAL_SUMMON -> "このカードは特殊召喚できない"
+        RestrictionKind.ANY_SUMMON -> "このカードは通常召喚も特殊召喚もできない"
+        RestrictionKind.ATTACK -> "このカードは攻撃できない"
+        RestrictionKind.DIRECT_ATTACK -> "このカードは直接攻撃できない"
+        RestrictionKind.CHANGE_POSITION -> "このカードの表示形式は変更できない"
+        RestrictionKind.TRIBUTE -> "このカードはリリースできない"
+        RestrictionKind.DEAL_BATTLE_DAMAGE -> "このカードは戦闘ダメージを与えられない"
+        RestrictionKind.TAKE_BATTLE_DAMAGE -> "このカードとの戦闘では、プレイヤーは戦闘ダメージを受けない"
+        RestrictionKind.BE_ATTACKED -> "相手はこのカードを攻撃対象にできない"
+        else -> kind.template.replace("{who}", "お互い").replace("{target}", "このカード")
+    }
+
+    /** カード自身にずっと付く許可の一文。 */
+    fun selfPermissionSentence(kind: PermissionKind): String = when (kind) {
+        PermissionKind.DIRECT_ATTACK -> "このカードは、相手にモンスターがいても直接攻撃できる"
+        PermissionKind.MUST_BE_ATTACKED ->
+            "このカードがフィールドに存在する限り、相手は他のモンスターを攻撃できない"
+    }
+
     /** 「このカードを発動するターン、〜できない」という【制限】の文。 */
     fun playLockToText(lock: PlayLock, master: MasterData): String =
         "このカードを発動するターン、" +
@@ -309,6 +334,9 @@ object EffectTextRenderer {
             "${action.duration.label}、" + restrictionSentence(
                 action.who.label, action.kind, action.filters, action.except, master
             )
+
+        is ExtraSummonAction ->
+            "${action.who.label}はこのターン、通常召喚をもう${action.count}回できる"
 
         is AddCounterAction ->
             scopeToText(action.scope, master) + selectionParticle(action.scope) +
@@ -427,7 +455,14 @@ object EffectTextRenderer {
             }
         }
         val tail = condition.window.suffix
-        if (condition.selfOnly) return "このカードが${by}${condition.event.label}$tail"
+        if (condition.selfOnly) {
+            // ダメージなどプレイヤーへの出来事は、誰が受けたかまで書く。
+            if (condition.event.isPlayerEvent) {
+                val cause = if (by.isEmpty()) "によって" else "の$by"
+                return "このカード${cause}${condition.who.label}が${condition.event.label}$tail"
+            }
+            return "このカードが${by}${condition.event.label}$tail"
+        }
         if (condition.event.isPlayerEvent) {
             return "${condition.who.label}が${by}${condition.event.label}$tail"
         }
@@ -461,9 +496,19 @@ object EffectTextRenderer {
             if (condition.zones.isEmpty()) "このカードがどこかに存在する場合"
             else "このカードが" + condition.zones.joinToString("または") { it.label } + "に存在する場合"
 
-        is PhaseCondition ->
-            if (condition.phases.isEmpty()) "いつでも"
-            else condition.phases.joinToString("または") { it.label } + "である"
+        is PhaseCondition -> {
+            val side = when (condition.who) {
+                null -> ""
+                PlayerRef.SELF -> "自分のターンの"
+                PlayerRef.OPPONENT -> "相手のターンの"
+                PlayerRef.BOTH -> "お互いのターンの"
+            }
+            if (condition.phases.isEmpty()) {
+                if (side.isEmpty()) "いつでも" else side.removeSuffix("の") + "である"
+            } else {
+                side + condition.phases.joinToString("または") { it.label } + "である"
+            }
+        }
 
         is LifeCondition ->
             "${condition.who.label}のライフが${condition.value}${condition.cmp.label}である"
@@ -591,8 +636,19 @@ object EffectTextRenderer {
     /** 手直しを反映しない、データから組み立てただけのテキスト。 */
     fun renderGenerated(card: CardDef, master: MasterData): String {
         val lines = mutableListOf<String>()
-        val effect = card.effect ?: return ""
-        if (effect.isEmpty) return ""
+
+        // 効果ではなく、カードそのものに書かれている決まりごと。
+        if (card.cannotNormalSummon) lines += "このカードは通常召喚できない。"
+        if (card.specialSummonOnlyBy.isNotEmpty()) {
+            lines += filtersToNoun(card.specialSummonOnlyBy, master, ZoneType.FIELD) +
+                "の効果でのみ特殊召喚できる。"
+        }
+        if (card.cannotSpecialSummon) lines += "このカードは特殊召喚できない。"
+        card.selfRestrictions.forEach { lines += selfRestrictionSentence(it) + "。" }
+        card.selfPermissions.forEach { lines += selfPermissionSentence(it) + "。" }
+
+        val effect = card.effect
+        if (effect == null || effect.isEmpty) return lines.joinToString("\n")
 
         // 効果番号より前の共通指定。
         if (effect.locations.isNotEmpty()) {
@@ -628,6 +684,10 @@ object EffectTextRenderer {
 
             // 効果そのものの前に置く【…】の欄。区切りを入れて、効果本体と分ける。
             val prefixes = mutableListOf<String>()
+            // 誘発効果は、任意か強制かを最初の欄に書く。
+            if (effect.isTriggered(index)) {
+                prefixes += if (clause.mode == ActivationMode.MANDATORY) "【強制】" else "【任意】"
+            }
             if (clause.locations.isNotEmpty()) {
                 prefixes += "【場所】" + clause.locations.joinToString("、") { it.label }
             }
@@ -664,15 +724,12 @@ object EffectTextRenderer {
                 sb.append("このカードが${where}に存在する限り、")
                 sb.append(
                     stepText(
-                        clause.actions, emptyList(), clause.linkedSteps,
-                        ActivationMode.MANDATORY, false
+                        clause.actions, emptyList(), clause.linkedSteps
                     ) { continuousActionToText(it, master) }.replace("。その後、", "。また、")
                 )
             } else if (clause.actions.isNotEmpty()) {
                 sb.append(
-                    joinSteps(clause, triggered = effect.isTriggered(index)) {
-                        actionToText(it, master)
-                    }
+                    joinSteps(clause) { actionToText(it, master) }
                 )
             }
             if (clause.actions.isNotEmpty()) sb.append("。")
@@ -788,26 +845,18 @@ object EffectTextRenderer {
      */
     private fun joinSteps(
         clause: EffectClause,
-        triggered: Boolean = false,
         text: (Action) -> String
-    ): String = stepText(
-        clause.actions, clause.optionalSteps, clause.linkedSteps, clause.mode, triggered, text
-    )
+    ): String = stepText(clause.actions, clause.optionalSteps, clause.linkedSteps, text)
 
     private fun joinSteps(
         branch: EffectBranch,
         text: (Action) -> String
-    ): String = stepText(
-        branch.actions, branch.optionalSteps, branch.linkedSteps,
-        ActivationMode.MANDATORY, false, text
-    )
+    ): String = stepText(branch.actions, branch.optionalSteps, branch.linkedSteps, text)
 
     private fun stepText(
         actions: List<Action>,
         optionalSteps: List<Int>,
         linkedSteps: List<Int>,
-        mode: ActivationMode,
-        triggered: Boolean,
         text: (Action) -> String
     ): String {
         val units = stepUnits(actions.size, optionalSteps, linkedSteps)
@@ -815,8 +864,7 @@ object EffectTextRenderer {
             val body = joinLinked(unit.indices.map { text(actions[it]) })
             when {
                 unit.optional -> optionalStepText(body)
-                // 最後の文だけ「〜できる（任意）／〜する（強制）」を書き分ける。
-                position == units.lastIndex && triggered -> applyMode(body, mode)
+                // 任意か強制かは【任意】【強制】の欄で示すので、文末は書き分けない。
                 else -> body
             }
         }.joinToString("。その後、")
@@ -852,24 +900,6 @@ object EffectTextRenderer {
 
     /** 「〜することができる」と書く、任意の処理の文。 */
     fun optionalStepText(text: String): String = text + "ことができる"
-
-    /** 述語の語尾を、任意発動なら「できる」に置き換える。 */
-    private fun applyMode(text: String, mode: ActivationMode): String {
-        if (mode == ActivationMode.MANDATORY) return text
-        return toOptional(text)
-    }
-
-    private fun toOptional(text: String): String {
-        return when {
-            text.endsWith("する") -> text.removeSuffix("する") + "できる"
-            text.endsWith("送る") -> text.removeSuffix("送る") + "送ることができる"
-            text.endsWith("加える") -> text.removeSuffix("加える") + "加えることができる"
-            text.endsWith("戻す") -> text.removeSuffix("戻す") + "戻すことができる"
-            text.endsWith("与える") -> text.removeSuffix("与える") + "与えることができる"
-            text.endsWith("捨てる") -> text.removeSuffix("捨てる") + "捨てさせることができる"
-            else -> "$text ことができる".replace(" ", "")
-        }
-    }
 
     /** カード一覧などで使う1行の要約。 */
     fun summary(card: CardDef, master: MasterData): String = when (card.kind) {

@@ -537,6 +537,7 @@ class GameEngine(
         // 「このカードの効果によって特殊召喚された」は、誰の効果かが要るので
         // matchesAll でしか判定できない。単独では常に満たすものとして扱う。
         is SummonedByThisFilter -> true
+        is HasEffectFilter -> inst.card.hasEffect == filter.hasEffect
         is AnyFilter ->
             filter.filters.isEmpty() || filter.filters.any { matches(inst, it) }
 
@@ -609,9 +610,11 @@ class GameEngine(
         scope: CardScope,
         controller: PlayerState,
         prompt: String,
-        source: CardInstance? = null
+        source: CardInstance? = null,
+        /** 候補をさらに絞る条件。処理できない相手を選ばせないために使う。 */
+        usable: (CardInstance) -> Boolean = { true }
     ): List<CardInstance> {
-        val pool = candidates(scope, controller, source)
+        val pool = candidates(scope, controller, source).filter(usable)
         if (scope.selfOnly) return pool
         if (pool.isEmpty()) return emptyList()
         val want = effectiveCount(scope, controller, source)
@@ -717,8 +720,10 @@ class GameEngine(
                     zone != null && (condition.zones.isEmpty() || zone in condition.zones)
                 }
 
-                is PhaseCondition ->
-                    condition.phases.isEmpty() || state.phase in condition.phases
+                is PhaseCondition -> {
+                    val phaseOk = condition.phases.isEmpty() || state.phase in condition.phases
+                    phaseOk && turnSideMatches(condition.who, controller)
+                }
 
                 is CounterCondition -> {
                     val total = candidates(condition.scope, controller, holder, false)
@@ -731,6 +736,13 @@ class GameEngine(
                 }
             }
         }
+
+    /** 「自分のターン」「相手のターン」の判定。未指定なら問わない。 */
+    private fun turnSideMatches(who: PlayerRef?, controller: PlayerState): Boolean = when (who) {
+        null, PlayerRef.BOTH -> true
+        PlayerRef.SELF -> state.turnPlayer === controller
+        PlayerRef.OPPONENT -> state.turnPlayer !== controller
+    }
 
     private fun matchesEvent(
         condition: EventCondition,
@@ -745,13 +757,18 @@ class GameEngine(
             val from = event.sourceCard ?: return false
             if (!matchesAll(from, condition.sourceFilters)) return false
         }
-        if (condition.selfOnly) return event.card === holder
-
         val ownerMatches = when (condition.who) {
             PlayerRef.SELF -> event.playerIndex == controller.index
             PlayerRef.OPPONENT -> event.playerIndex != controller.index
             PlayerRef.BOTH -> true
         }
+
+        if (condition.selfOnly) {
+            if (event.card !== holder) return false
+            // プレイヤーへの出来事は「このカードによって誰が」まで見る。
+            return !condition.event.isPlayerEvent || ownerMatches
+        }
+
         if (!ownerMatches) return false
         if (condition.event.isPlayerEvent) return true
 
@@ -1005,7 +1022,15 @@ class GameEngine(
     // ライフとドロー
     // =======================================================================
 
-    suspend fun dealDamage(player: PlayerState, amount: Int) {
+    /**
+     * [source] は、そのダメージの元になったカード。
+     * 「このカードの戦闘によって〜がダメージを受けた場合」の判定に使う。
+     */
+    suspend fun dealDamage(
+        player: PlayerState,
+        amount: Int,
+        source: CardInstance? = null
+    ) {
         if (amount <= 0) return
         player.life -= amount
         log("${player.name}は${amount}ダメージを受けた。（残り${player.life.coerceAtLeast(0)}）")
@@ -1014,7 +1039,7 @@ class GameEngine(
             finish(state.opponentOf(player).index, "${player.name}のライフが0になった")
             return
         }
-        emit(GameEvent(GameEventType.DAMAGE_TAKEN, player.index))
+        emit(GameEvent(GameEventType.DAMAGE_TAKEN, player.index, source))
     }
 
     suspend fun recoverLife(player: PlayerState, amount: Int) {
@@ -1118,8 +1143,10 @@ class GameEngine(
 
             is SpecialSummonAction -> {
                 val destination = primaryPlayer(action.controller, controller)
-                val targets = resolveTargets(action.scope, controller, "特殊召喚するモンスターを選択", source)
-                    .filter { it.card.kind == CardKind.MONSTER }
+                // 出せないモンスターは、そもそも候補に出さない。
+                val targets = resolveTargets(
+                    action.scope, controller, "特殊召喚するモンスターを選択", source
+                ) { canBeSpecialSummoned(it, destination, source) }
                 val summoned = mutableListOf<CardInstance>()
                 for (target in targets) {
                     if (!summonAllowed(target, destination, SummonKind.SPECIAL)) {
@@ -1300,6 +1327,13 @@ class GameEngine(
                             player.name, action.kind, action.filters, action.except, state.master
                         ) + "。"
                     )
+                }
+            }
+
+            is ExtraSummonAction -> {
+                playersFor(action.who, controller).forEach { player ->
+                    player.normalSummonLimit += action.count.coerceAtLeast(1)
+                    log("${player.name}はこのターン、通常召喚をもう${action.count}回できる。")
                 }
             }
 
@@ -1635,6 +1669,16 @@ class GameEngine(
             if (position in skipped) continue
             // 前の処理の結果を見る指定は、発動時点では確かめようがないので飛ばす。
             if (position > 0 && dependsOnPreviousStep(scopeOf(action))) continue
+            if (action is SpecialSummonAction) {
+                val destination = primaryPlayer(action.controller, controller)
+                val pool = candidates(action.scope, controller, source)
+                    .filter { canBeSpecialSummoned(it, destination, source) }
+                    .filter { card -> consumed.none { it === card } }
+                val needed = requiredCount(action.scope, controller, source)
+                if (pool.size < needed) return false
+                consumed += pool.take(needed)
+                continue
+            }
             // 素材依存の特殊召喚は、出すモンスターと素材の組み合わせの両方を見る。
             if (action is MaterialSummonAction) {
                 if (!canMaterialSummon(action, controller, source)) return false
@@ -1667,7 +1711,11 @@ class GameEngine(
         if (phases.isNotEmpty()) {
             if (state.phase !in phases) return false
             if (isQuickEffect(inst, effect, index)) return true
-            // 魔法とモンスターの効果は、フェイズを指定しても自分のターンのまま。
+            // どちらのターンかを書いてあれば、その指定に従う。
+            val sides = effect.phaseConditionsFor(index).mapNotNull { it.who }
+            if (sides.any { it != PlayerRef.SELF }) return true
+            if (sides.isNotEmpty()) return state.turnPlayer === controller
+            // 指定がなければ、魔法とモンスターの効果は自分のターンのまま。
             if (inst.card.kind != CardKind.TRAP && state.turnPlayer !== controller) return false
             return true
         }
@@ -1687,8 +1735,9 @@ class GameEngine(
     fun isQuickEffect(inst: CardInstance, effect: EffectText, index: Int): Boolean {
         // 罠はセットしてから発動するものなので、もともと割り込める。
         if (inst.card.kind == CardKind.TRAP) return true
-        // それ以外は【誘発即時】に印を付けた効果だけ。【場所】だけでは割り込めない。
-        return effect.isQuick(index)
+        if (effect.isQuick(index)) return true
+        // 【強制】の効果は、相手のターンでも起きるものとして扱う。
+        return effect.clauses.getOrNull(index)?.mode == ActivationMode.MANDATORY
     }
 
     // -----------------------------------------------------------------------
@@ -2778,6 +2827,15 @@ class GameEngine(
     }
 
     /** [inst] を [kind] の方法で出せるか。掛かっている召喚制限を見る。 */
+    /** [inst] を [destination] のフィールドに、[by] の効果で特殊召喚できるか。 */
+    fun canBeSpecialSummoned(
+        inst: CardInstance,
+        destination: PlayerState,
+        by: CardInstance?
+    ): Boolean = inst.card.kind == CardKind.MONSTER &&
+        summonAllowed(inst, destination, SummonKind.SPECIAL) &&
+        specialSummonSourceAllowed(inst, by)
+
     /**
      * 「〜の効果によってのみ特殊召喚できる」を満たしているか。
      * [by] はそのカードを出そうとしている効果の持ち主。
@@ -2865,7 +2923,7 @@ class GameEngine(
 
         controller.hand.remove(inst)
         controller.monsterZones[zone] = inst
-        controller.normalSummonUsed = true
+        controller.normalSummonsUsed += 1
         inst.summonedOnTurn = state.turn
 
         if (asSet) {
@@ -2947,8 +3005,20 @@ class GameEngine(
     /**
      * 攻撃対象の一覧。相手フィールドにモンスターがいる限り
      * プレイヤーへの直接攻撃はできない（空リスト＝直接攻撃のみ）。
+     *
+     * 「攻撃対象にできない」カードは外し、
+     * 「相手はこのカードしか攻撃できない」カードがいればそれだけに絞る。
      */
-    fun attackTargets(): List<CardInstance> = state.nonTurnPlayer.monsters
+    fun attackTargets(): List<CardInstance> {
+        val defender = state.nonTurnPlayer
+        val open = defender.monsters.filter {
+            allowed(state.turnPlayer, RestrictionKind.BE_ATTACKED, it)
+        }
+        val forced = open.filter {
+            permitted(defender, PermissionKind.MUST_BE_ATTACKED, it)
+        }
+        return forced.ifEmpty { open }
+    }
 
     fun canAttackDirectly(): Boolean = !state.nonTurnPlayer.hasMonsters
 
@@ -2972,7 +3042,9 @@ class GameEngine(
             log("${to.name}は戦闘ダメージを受けない。")
             return
         }
-        dealDamage(to, amount)
+        // 「このカードの戦闘によって〜がダメージを受けた場合」を書けるように、
+        // 戦っていたモンスターと「戦闘が原因」を出来事に添える。
+        withCause(EventCause.BATTLE, null, source) { dealDamage(to, amount, source) }
     }
 
     /**
@@ -3042,6 +3114,10 @@ class GameEngine(
         }
 
         if (locate(target)?.zone != ZoneType.MONSTER_ZONE) return
+        if (attackTargets().none { it === target }) {
+            log("「${target.card.name}」は攻撃対象にできない。")
+            return
+        }
 
         if (target.faceDown) {
             target.faceDown = false
@@ -3168,7 +3244,8 @@ class GameEngine(
 
         state.eventsThisTurn.clear()
         state.players.forEach { player ->
-            player.normalSummonUsed = false
+            player.normalSummonsUsed = 0
+            player.normalSummonLimit = 1
             player.activationsThisTurn.clear()
             player.restrictions.removeAll { it.untilTurn < state.turn }
             player.permissions.removeAll { it.untilTurn < state.turn }
