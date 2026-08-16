@@ -91,6 +91,7 @@ object IdRemapper {
             is AttributeFilter -> filter.copy(attributeId = m[filter.attributeId] ?: filter.attributeId)
             is RaceFilter -> filter.copy(raceId = m[filter.raceId] ?: filter.raceId)
             is CategoryFilter -> filter.copy(categoryId = m[filter.categoryId] ?: filter.categoryId)
+            is AnyFilter -> filter.copy(filters = filter.filters.map { remapFilter(it, m) })
             else -> filter
         }
 
@@ -130,6 +131,11 @@ object IdRemapper {
         is GrantProtectionAction -> action.copy(scope = remapScope(action.scope, m))
         is PreventAttackAction -> action.copy(scope = remapScope(action.scope, m))
         is RevealAction -> action.copy(scope = remapScope(action.scope, m))
+
+        is RitualSummonAction -> action.copy(
+            summon = remapScope(action.summon, m),
+            material = remapScope(action.material, m)
+        )
 
         is GrantEffectAction -> action.copy(
             scope = remapScope(action.scope, m),
@@ -199,6 +205,7 @@ object IdRemapper {
                 is AttributeFilter -> ids += filter.attributeId
                 is RaceFilter -> ids += filter.raceId
                 is CategoryFilter -> ids += filter.categoryId
+                is AnyFilter -> collectFilters(filter.filters, ids)
                 else -> Unit
             }
         }
@@ -254,6 +261,11 @@ object IdRemapper {
             is PreventAttackAction -> collectScope(action.scope, ids)
             is RevealAction -> collectScope(action.scope, ids)
             is RestrictSummonAction -> collectFilters(action.filters, ids)
+
+            is RitualSummonAction -> {
+                collectScope(action.summon, ids)
+                collectScope(action.material, ids)
+            }
 
             is GrantEffectAction -> {
                 collectScope(action.scope, ids)

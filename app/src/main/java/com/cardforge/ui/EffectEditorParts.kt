@@ -34,6 +34,10 @@ fun filterChipLabel(filter: CardFilter, master: MasterData): String = when (filt
     is NameFilter -> "名前に「${filter.text}」"
     is SummonedByThisFilter ->
         if (filter.enabled) "このカードの効果で特殊召喚された" else "それ以外"
+
+    is AnyFilter ->
+        if (filter.filters.isEmpty()) "（未設定）"
+        else filter.filters.joinToString("／") { filterChipLabel(it, master) }
 }
 
 private enum class FilterType(val label: String) {
@@ -46,7 +50,8 @@ private enum class FilterType(val label: String) {
     DEF("守備力"),
     POSITION("表示形式"),
     NAME("カード名"),
-    SUMMONED_BY_THIS("このカードの効果で特殊召喚された")
+    SUMMONED_BY_THIS("このカードの効果で特殊召喚された"),
+    ANY_OF("いずれかに当てはまる（または）")
 }
 
 @Composable
@@ -64,6 +69,8 @@ fun FilterDialog(
     var value by remember { mutableIntStateOf(4) }
     var position by remember { mutableStateOf(Position.ATTACK) }
     var name by remember { mutableStateOf("") }
+    var anyOf by remember { mutableStateOf<List<CardFilter>>(emptyList()) }
+    var addingAnyOf by remember { mutableStateOf(false) }
 
     val built: CardFilter? = when (type) {
         FilterType.KIND -> KindFilter(kind)
@@ -76,6 +83,7 @@ fun FilterDialog(
         FilterType.POSITION -> PositionFilter(position)
         FilterType.NAME -> if (name.isBlank()) null else NameFilter(name.trim())
         FilterType.SUMMONED_BY_THIS -> SummonedByThisFilter()
+        FilterType.ANY_OF -> if (anyOf.isEmpty()) null else AnyFilter(anyOf)
     }
 
     AlertDialog(
@@ -130,6 +138,24 @@ fun FilterDialog(
                         singleLine = true
                     )
 
+                    FilterType.ANY_OF -> {
+                        Text(
+                            "並べた条件のうち、どれか1つに当てはまるカードが対象になります。" +
+                                "「『VALIS』モンスターまたはレベル4以下のモンスター」" +
+                                "のように書けます。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        FlowRowSimple {
+                            anyOf.forEachIndexed { index, inner ->
+                                Chip(filterChipLabel(inner, master) + " ✕", selected = true) {
+                                    anyOf = anyOf.toMutableList().also { it.removeAt(index) }
+                                }
+                            }
+                            Chip("＋ 「または」でつなぐ条件") { addingAnyOf = true }
+                        }
+                    }
+
                     FilterType.SUMMONED_BY_THIS -> Text(
                         "この効果を持つカードの効果で特殊召喚されたカードだけを指します。" +
                             "「このカードの効果によって特殊召喚されたモンスターは〜」" +
@@ -148,6 +174,18 @@ fun FilterDialog(
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("キャンセル") } }
     )
+
+    // 「または」でつなぐ条件は、同じダイアログをもう一段開いて作る。
+    if (addingAnyOf) {
+        FilterDialog(
+            master = master,
+            onDismiss = { addingAnyOf = false },
+            onConfirm = {
+                anyOf = anyOf + it
+                addingAnyOf = false
+            }
+        )
+    }
 }
 
 // ===========================================================================

@@ -396,7 +396,8 @@ class GameEngine(
     /** カードの中身を見ないと判定できないフィルタが含まれているか。 */
     private fun needsCardInfo(filters: List<CardFilter>): Boolean = filters.any {
         it is AttributeFilter || it is RaceFilter || it is CategoryFilter ||
-            it is LevelFilter || it is AtkFilter || it is DefFilter || it is NameFilter
+            it is LevelFilter || it is AtkFilter || it is DefFilter || it is NameFilter ||
+            (it is AnyFilter && needsCardInfo(it.filters))
     }
 
     fun matches(inst: CardInstance, filter: CardFilter): Boolean = when (filter) {
@@ -418,6 +419,8 @@ class GameEngine(
         // 「このカードの効果によって特殊召喚された」は、誰の効果かが要るので
         // matchesAll でしか判定できない。単独では常に満たすものとして扱う。
         is SummonedByThisFilter -> true
+        is AnyFilter ->
+            filter.filters.isEmpty() || filter.filters.any { matches(inst, it) }
     }
 
     fun matchesAll(
@@ -425,12 +428,18 @@ class GameEngine(
         filters: List<CardFilter>,
         source: CardInstance? = null
     ): Boolean = filters.all { filter ->
-        if (filter is SummonedByThisFilter) {
-            // 「このカードの効果によって特殊召喚された」かどうか。
-            val matched = source != null && inst.summonedByUid == source.uid
-            if (filter.enabled) matched else !matched
-        } else {
-            matches(inst, filter)
+        when (filter) {
+            is SummonedByThisFilter -> {
+                // 「このカードの効果によって特殊召喚された」かどうか。
+                val matched = source != null && inst.summonedByUid == source.uid
+                if (filter.enabled) matched else !matched
+            }
+
+            // 「または」は、どれか1つに当てはまればよい。
+            is AnyFilter -> filter.filters.isEmpty() ||
+                filter.filters.any { matchesAll(inst, listOf(it), source) }
+
+            else -> matches(inst, filter)
         }
     }
 
@@ -1064,6 +1073,8 @@ class GameEngine(
             // 効果の付与は【発動タイプ】が「永続」のときだけ働く。
             is GrantEffectAction -> log("効果の付与は「永続」の効果に書いてください。")
 
+            is RitualSummonAction -> runRitualSummon(action, controller, source)
+
             is AdvancePhaseAction -> {
                 // 効果の処理の途中でフェイズを動かすと壊れるので、
                 // 全ての処理が終わってから適用する。
@@ -1339,6 +1350,11 @@ class GameEngine(
 
         for ((position, action) in actions.withIndex()) {
             if (position in skipped) continue
+            // 儀式召喚は、出すモンスターとリリースする組み合わせの両方を見る。
+            if (action is RitualSummonAction) {
+                if (!canRitualSummon(action, controller, source)) return false
+                continue
+            }
             val scope = scopeOf(action) ?: continue
             val pool = candidates(scope, controller, source).filter { card ->
                 consumed.none { it === card }
@@ -1426,7 +1442,8 @@ class GameEngine(
             else limit.clauseIndices.sorted().joinToString(",")
         return when (limit.applies) {
             LimitApplies.EACH -> limitKey(limit, inst, clauseIndex) + "@$group"
-            LimitApplies.TOGETHER -> limitKey(limit, inst, null) + "@$group"
+            LimitApplies.TOGETHER,
+            LimitApplies.ONLY_ONE_KIND -> limitKey(limit, inst, null) + "@$group"
         }
     }
 
@@ -1452,15 +1469,39 @@ class GameEngine(
     ): Int? {
         val limits = applicableLimits(inst, clauseIndex)
         if (limits.isEmpty()) return null
+        if (lockedToAnotherClause(inst, clauseIndex, controller)) return 0
         return limits.minOf { (key, times) ->
             times - controller.activationsThisTurn.count { key in it.limitKeys }
         }.coerceAtLeast(0)
     }
 
-    fun limitsAllow(inst: CardInstance, clauseIndex: Int, controller: PlayerState): Boolean =
-        applicableLimits(inst, clauseIndex).all { (key, times) ->
+    fun limitsAllow(inst: CardInstance, clauseIndex: Int, controller: PlayerState): Boolean {
+        val withinCount = applicableLimits(inst, clauseIndex).all { (key, times) ->
             controller.activationsThisTurn.count { key in it.limitKeys } < times
         }
+        return withinCount && !lockedToAnotherClause(inst, clauseIndex, controller)
+    }
+
+    /**
+     * 「いずれか1つだけ」の制限で、このターンは別の効果を選んでしまっているか。
+     *
+     * 同じ枠の記録に、違う効果番号の発動があれば、この効果はもう使えない。
+     */
+    private fun lockedToAnotherClause(
+        inst: CardInstance,
+        clauseIndex: Int,
+        controller: PlayerState
+    ): Boolean {
+        val effect = effectOf(inst) ?: return false
+        return effect.limits.any { limit ->
+            if (limit.applies != LimitApplies.ONLY_ONE_KIND) return@any false
+            if (!limit.coversClause(clauseIndex)) return@any false
+            val key = cardWideLimitKey(limit, inst, clauseIndex)
+            controller.activationsThisTurn.any {
+                key in it.limitKeys && it.clauseIndex != clauseIndex
+            }
+        }
+    }
 
     private fun recordActivation(
         inst: CardInstance,
@@ -1660,6 +1701,12 @@ class GameEngine(
         controller: PlayerState
     ): Boolean {
         val effect = inst.card.effect ?: return false
+        if (!limitsAllow(inst, CARD_ACTIVATION, controller)) {
+            val reason = "【制限】により、このターンはもう発動できない。"
+            log("「${inst.card.name}」は発動できなかった：$reason")
+            interaction.notify(controller.index, "「${inst.card.name}」：$reason")
+            return false
+        }
         val locations = effect.locations.ifEmpty { listOf(ActivationLocation.FIELD) }
         val placeOnField = needsFieldPlacement(inst, locations)
 
@@ -1816,6 +1863,13 @@ class GameEngine(
     ): Boolean {
         val effect = effectOf(inst) ?: return false
         val clause = effect.clauses.getOrNull(clauseIndex) ?: return false
+        // 発動の直前にもう一度確かめる。どの入口から来ても回数を超えないようにする。
+        if (!limitsAllow(inst, clauseIndex, controller)) {
+            val reason = "【制限】により、このターンはもう発動できない。"
+            log("「${inst.card.name}」は発動できなかった：$reason")
+            interaction.notify(controller.index, "「${inst.card.name}」：$reason")
+            return false
+        }
         val isSpellOrTrap = inst.card.kind != CardKind.MONSTER
         val locations = effectiveLocations(effect, clauseIndex)
 
@@ -1875,6 +1929,154 @@ class GameEngine(
             disposeAfterActivation(inst, effect.afterActivationFor(clauseIndex, inst.card.kind))
         }
         return true
+    }
+
+    // =======================================================================
+    // 儀式召喚
+    // =======================================================================
+
+    /** 儀式召喚で1体出すのに必要な数（レベルの合計、または体数）。 */
+    private fun ritualNeed(action: RitualSummonAction, target: CardInstance): Int =
+        when (action.requirement) {
+            RitualRequirement.COUNT -> action.count.coerceAtLeast(1)
+            else -> target.card.level.coerceAtLeast(1)
+        }
+
+    /** [pool] から [need] を満たす組み合わせが作れるか。 */
+    private fun canMeetRitual(
+        action: RitualSummonAction,
+        pool: List<CardInstance>,
+        need: Int
+    ): Boolean = when (action.requirement) {
+        RitualRequirement.COUNT -> pool.size >= need
+        RitualRequirement.LEVEL_OR_MORE -> pool.sumOf { it.card.level } >= need
+        RitualRequirement.LEVEL_EXACT -> {
+            // ぴったり合う組み合わせがあるかを、小さな盤面向けに素直に調べる。
+            val reachable = BooleanArray(need + 1).also { it[0] = true }
+            for (card in pool) {
+                val level = card.card.level.coerceAtLeast(0)
+                if (level == 0) continue
+                for (total in need downTo level) {
+                    if (reachable[total - level]) reachable[total] = true
+                }
+            }
+            reachable[need]
+        }
+    }
+
+    /** 儀式召喚できる状態か。発動できるかの判定に使う。 */
+    fun canRitualSummon(
+        action: RitualSummonAction,
+        controller: PlayerState,
+        source: CardInstance?
+    ): Boolean {
+        if (controller.freeMonsterZones().isEmpty()) return false
+        val targets = candidates(action.summon, controller, source)
+            .filter { it.card.kind == CardKind.MONSTER }
+        return targets.any { target ->
+            if (!summonAllowed(target, controller, SummonKind.SPECIAL)) return@any false
+            val pool = candidates(action.material, controller, source).filter { it !== target }
+            canMeetRitual(action, pool, ritualNeed(action, target))
+        }
+    }
+
+    private suspend fun runRitualSummon(
+        action: RitualSummonAction,
+        controller: PlayerState,
+        source: CardInstance?
+    ) {
+        if (controller.freeMonsterZones().isEmpty()) {
+            log("モンスターゾーンに空きが無いため儀式召喚できない。")
+            return
+        }
+        val targets = candidates(action.summon, controller, source)
+            .filter { it.card.kind == CardKind.MONSTER }
+            .filter { summonAllowed(it, controller, SummonKind.SPECIAL) }
+            .filter { target ->
+                val pool = candidates(action.material, controller, source).filter { it !== target }
+                canMeetRitual(action, pool, ritualNeed(action, target))
+            }
+        if (targets.isEmpty()) {
+            log("儀式召喚できるモンスターがいない。")
+            return
+        }
+
+        val target = interaction
+            .chooseCards(controller.index, "儀式召喚するモンスターを選択", targets, 1, 1)
+            .firstOrNull() ?: return
+
+        val need = ritualNeed(action, target)
+        val chosen = mutableListOf<CardInstance>()
+        var remaining = candidates(action.material, controller, source).filter { it !== target }
+
+        // 条件を満たすまで1体ずつ選ばせる。AI もこの形なら順に選べる。
+        var guard = 0
+        while (guard++ < 12 && !meetsRitual(action, chosen, need)) {
+            if (remaining.isEmpty()) break
+            val label = when (action.requirement) {
+                RitualRequirement.COUNT ->
+                    "リリースするモンスターを選択（あと${need - chosen.size}体）"
+
+                else -> {
+                    val short = need - chosen.sumOf { it.card.level }
+                    "リリースするモンスターを選択（レベル合計あと$short）"
+                }
+            }
+            val picked = interaction
+                .chooseCards(controller.index, label, remaining, 1, 1)
+                .firstOrNull() ?: break
+            chosen += picked
+            remaining = remaining.filter { it !== picked }
+        }
+
+        if (!meetsRitual(action, chosen, need)) {
+            log("リリースする条件を満たせなかったため儀式召喚できない。")
+            return
+        }
+
+        chosen.forEach { moveForCost(it, action.destination) }
+        log(
+            "${controller.name}は${chosen.size}体を${action.destination.label}、" +
+                "「${target.card.name}」を儀式召喚した。"
+        )
+
+        val zone = controller.freeMonsterZones().firstOrNull()
+        if (zone == null) {
+            log("モンスターゾーンに空きが無いため儀式召喚できない。")
+            return
+        }
+        val choices = action.choices
+        val position = if (choices.size <= 1) {
+            choices.first()
+        } else {
+            val picked = interaction.chooseOption(
+                controller.index,
+                "「${target.card.name}」を出す表示形式を選択",
+                choices.map { it.label }
+            )
+            choices[picked.coerceIn(choices.indices)]
+        }
+
+        removeFromCurrent(target)
+        resetInstance(target)
+        controller.monsterZones[zone] = target
+        applyPosition(target, position)
+        target.summonedOnTurn = state.turn
+        target.summonedByUid = source?.uid
+        emit(
+            GameEvent(GameEventType.SPECIAL_SUMMONED, controller.index, target),
+            GameEvent(GameEventType.SUMMONED, controller.index, target)
+        )
+    }
+
+    private fun meetsRitual(
+        action: RitualSummonAction,
+        chosen: List<CardInstance>,
+        need: Int
+    ): Boolean = when (action.requirement) {
+        RitualRequirement.COUNT -> chosen.size >= need
+        RitualRequirement.LEVEL_OR_MORE -> chosen.sumOf { it.card.level } >= need
+        RitualRequirement.LEVEL_EXACT -> chosen.sumOf { it.card.level } == need
     }
 
     /**

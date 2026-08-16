@@ -49,6 +49,15 @@ object EffectTextRenderer {
         master: MasterData,
         fallbackZone: ZoneType? = null
     ): String {
+        // 「または」は、他の条件と組み合わせて1つずつ書き出す。
+        val anyFilter = filters.filterIsInstance<AnyFilter>().firstOrNull()
+        if (anyFilter != null && anyFilter.filters.isNotEmpty()) {
+            val others = filters.filterNot { it === anyFilter }
+            return anyFilter.filters.joinToString("または") { alternative ->
+                filtersToNoun(others + alternative, master, fallbackZone)
+            }
+        }
+
         val sb = StringBuilder()
 
         filters.filterIsInstance<SummonedByThisFilter>().forEach {
@@ -165,6 +174,20 @@ object EffectTextRenderer {
         return "$what$tail"
     }
 
+    /** 儀式召喚の文。 */
+    fun ritualToText(action: RitualSummonAction, master: MasterData): String {
+        val target = scopeToText(action.summon, master)
+        val material = scopeToText(action.material, master, withCount = false)
+        val how = when (action.requirement) {
+            RitualRequirement.LEVEL_EXACT -> "レベルの合計がそのモンスターのレベルとぴったり同じになるように"
+            RitualRequirement.LEVEL_OR_MORE -> "レベルの合計がそのモンスターのレベル以上になるように"
+            RitualRequirement.COUNT -> "${action.count.coerceAtLeast(1)}体"
+        }
+        val positions = action.choices.joinToString("または") { it.label }
+        return "${target}を、${material}を${how}${action.destination.label}ことで、" +
+            "${positions}で特殊召喚する"
+    }
+
     /** 「〜は次の効果を得る」という文。 */
     fun grantEffectToText(action: GrantEffectAction, master: MasterData): String {
         val who = scopeToText(action.scope, master, withCount = false)
@@ -197,6 +220,8 @@ object EffectTextRenderer {
         is GrantEffectAction -> grantEffectToText(action, master)
 
         is AdvancePhaseAction -> action.kind.label.removeSuffix("する") + "する"
+
+        is RitualSummonAction -> ritualToText(action, master)
 
         is RestrictSummonAction -> restrictSummonToText(action, master)
 
@@ -395,8 +420,12 @@ object EffectTextRenderer {
             limit.clauseIndices.isNotEmpty() && limit.applies == LimitApplies.EACH ->
                 "${numbers}はそれぞれ"
 
+            limit.clauseIndices.isNotEmpty() && limit.applies == LimitApplies.ONLY_ONE_KIND ->
+                "${numbers}のうちいずれか1つだけ、"
+
             limit.clauseIndices.isNotEmpty() -> "${numbers}は合わせて"
             limit.applies == LimitApplies.EACH -> "それぞれの効果は"
+            limit.applies == LimitApplies.ONLY_ONE_KIND -> "いずれか1つの効果だけ、"
             limit.scope == LimitScope.THIS_CARD -> "このカードは"
             else -> ""
         }
@@ -494,9 +523,7 @@ object EffectTextRenderer {
                 val onlyRestrictions = clause.actions.isNotEmpty() &&
                     clause.actions.all { it is RestrictSummonAction }
                 if (!onlyRestrictions) sb.append("このカードの発動時に、")
-                sb.append(
-                    clause.actions.joinToString("。その後、") { actionToText(it, master) }
-                )
+                sb.append(joinSteps(clause) { actionToText(it, master) })
             } else if (effect.isContinuous(index)) {
                 // 「このカードがフィールドに存在する限り、〜」という書き出しにする。
                 val where = effectiveLocationLabel(effect, index)

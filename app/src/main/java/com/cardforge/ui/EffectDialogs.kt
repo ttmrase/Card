@@ -38,6 +38,7 @@ private enum class ActionType(val label: String, val usesScope: Boolean) {
     PREVENT_ATTACK("攻撃できなくする（永続向き）", true),
     GRANT_EFFECT("効果を与える（永続向き）", true),
     ADVANCE_PHASE("フェイズ・ターンを進める", false),
+    RITUAL_SUMMON("儀式召喚する（リリースして特殊召喚）", false),
     REVEAL("カードを相手に見せる（公開する）", true),
     NEGATE("発動を無効にし破壊する", false)
 }
@@ -63,6 +64,7 @@ private fun typeOf(action: Action): ActionType = when (action) {
     is PreventAttackAction -> ActionType.PREVENT_ATTACK
     is GrantEffectAction -> ActionType.GRANT_EFFECT
     is AdvancePhaseAction -> ActionType.ADVANCE_PHASE
+    is RitualSummonAction -> ActionType.RITUAL_SUMMON
     // 旧データ用。編集画面では【制限】として扱う。
     is RestrictSummonAction -> ActionType.NEGATE
     is RevealAction -> ActionType.REVEAL
@@ -179,6 +181,9 @@ fun ActionDialog(
     var advance by remember {
         mutableStateOf((initial as? AdvancePhaseAction)?.kind ?: PhaseAdvance.SKIP_PHASE)
     }
+    var ritual by remember {
+        mutableStateOf((initial as? RitualSummonAction) ?: RitualSummonAction())
+    }
     var showGrantedAction by remember { mutableStateOf<Int?>(null) }
     var addingGrantedAction by remember { mutableStateOf(false) }
     var countValue by remember {
@@ -218,6 +223,7 @@ fun ActionDialog(
         ActionType.PREVENT_ATTACK -> PreventAttackAction(scope)
         ActionType.GRANT_EFFECT -> GrantEffectAction(scope, granted)
         ActionType.ADVANCE_PHASE -> AdvancePhaseAction(advance)
+        ActionType.RITUAL_SUMMON -> ritual
         ActionType.REVEAL -> RevealAction(scope, revealDuration)
         ActionType.NEGATE -> NegateAction
     }
@@ -396,6 +402,73 @@ fun ActionDialog(
                             }
                         }
                         Chip("＋ 与える効果の文を追加") { addingGrantedAction = true }
+                    }
+
+                    ActionType.RITUAL_SUMMON -> {
+                        HorizontalDivider()
+                        Text(
+                            "遊戯王の儀式召喚と同じ形です。" +
+                                "リリースするモンスターの条件を満たせないと発動できません。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+
+                        Text(
+                            "特殊召喚するモンスター（どこから・どんなカード）",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        CardScopeEditor(ritual.summon, master) {
+                            ritual = ritual.copy(summon = it)
+                        }
+
+                        HorizontalDivider()
+                        Text(
+                            "リリースするモンスター（どこから・どんなカード）",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        CardScopeEditor(ritual.material, master, showCount = false) {
+                            ritual = ritual.copy(material = it)
+                        }
+                        Dropdown(
+                            "リリースしたカードの行き先",
+                            MoveDestination.all,
+                            ritual.destination,
+                            { it.label }
+                        ) { ritual = ritual.copy(destination = it) }
+                        Dropdown(
+                            "リリースに求める条件",
+                            RitualRequirement.all,
+                            ritual.requirement,
+                            { it.label }
+                        ) { ritual = ritual.copy(requirement = it) }
+                        if (ritual.requirement == RitualRequirement.COUNT) {
+                            NumberField("必要な体数", ritual.count) {
+                                ritual = ritual.copy(count = it.coerceIn(1, 9))
+                            }
+                        }
+
+                        Text(
+                            "選べる表示形式",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        FlowRowSimple {
+                            Position.all.forEach { candidate ->
+                                Chip(candidate.label, selected = candidate in ritual.choices) {
+                                    val current = ritual.choices
+                                    ritual = ritual.copy(
+                                        positionChoices =
+                                            if (candidate in current) {
+                                                (current - candidate).ifEmpty { listOf(candidate) }
+                                            } else {
+                                                current + candidate
+                                            }
+                                    )
+                                }
+                            }
+                        }
                     }
 
                     ActionType.ADVANCE_PHASE -> {

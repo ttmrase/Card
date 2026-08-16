@@ -142,8 +142,17 @@ enum class AfterActivation(val label: String) {
 /** 【制限】をどの効果に、どう当てはめるか。 */
 @Serializable
 enum class LimitApplies(val label: String) {
-    TOGETHER("まとめて数える"),
-    EACH("効果ごとに別々に数える");
+    /** 掛かる効果をまとめて数える。合わせて n 度まで。 */
+    TOGETHER("まとめて数える（合わせて n 度まで）"),
+
+    /** 掛かる効果を別々に数える。それぞれ n 度まで。 */
+    EACH("効果ごとに別々に数える（それぞれ n 度まで）"),
+
+    /**
+     * まとめて数えたうえで、そのターンは最初に使った効果しか使えない。
+     * 「②③のうちいずれか1つだけ」と書きたいときに使う。
+     */
+    ONLY_ONE_KIND("いずれか1つだけ（1度使ったら他は使えない）");
 
     companion object {
         val all: List<LimitApplies> get() = entries

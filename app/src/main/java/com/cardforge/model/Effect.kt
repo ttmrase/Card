@@ -46,6 +46,11 @@ data class PositionFilter(val position: Position) : CardFilter
 @SerialName("name")
 data class NameFilter(val text: String) : CardFilter
 
+/** 並べた条件のうち、どれか1つに当てはまればよい。 */
+@Serializable
+@SerialName("anyFilter")
+data class AnyFilter(val filters: List<CardFilter> = emptyList()) : CardFilter
+
 /**
  * この効果を持つカードによって特殊召喚されたカード。
  * 「このカードの効果によって特殊召喚されたモンスター」と書きたいときに使う。
@@ -179,6 +184,57 @@ data class RestrictSummonAction(
     /** 「このカードを発動するターン」と書きたいときに true。 */
     val fromActivation: Boolean = true
 ) : Action
+
+/** 儀式召喚で、リリースするモンスターに求める条件。 */
+@Serializable
+enum class RitualRequirement(val label: String) {
+    /** レベルの合計が、出すモンスターのレベルとぴったり同じ。 */
+    LEVEL_EXACT("レベルの合計がぴったり同じ"),
+
+    /** レベルの合計が、出すモンスターのレベル以上。 */
+    LEVEL_OR_MORE("レベルの合計が同じか大きい"),
+
+    /** 体数だけを見る（[RitualSummonAction.count] 体）。 */
+    COUNT("決まった体数");
+
+    companion object {
+        val all: List<RitualRequirement> get() = entries
+    }
+}
+
+/**
+ * 遊戯王で言う儀式召喚。
+ *
+ * [material] のモンスターを [destination] へ送り、[summon] のモンスターを特殊召喚する。
+ * 送るモンスターに求める条件は [requirement] で決める。
+ */
+@Serializable
+@SerialName("ritualSummon")
+data class RitualSummonAction(
+    /** 特殊召喚するモンスターの居場所と条件。 */
+    val summon: CardScope = CardScope(
+        who = PlayerRef.SELF,
+        zone = ZoneType.HAND,
+        filters = listOf(KindFilter(CardKind.MONSTER)),
+        count = 1
+    ),
+    /** リリース（コストとして送る）モンスターの居場所と条件。 */
+    val material: CardScope = CardScope(
+        who = PlayerRef.SELF,
+        zone = ZoneType.FIELD,
+        filters = listOf(KindFilter(CardKind.MONSTER)),
+        selection = SelectionMode.CHOOSE
+    ),
+    /** 送ったモンスターの行き先。 */
+    val destination: MoveDestination = MoveDestination.GRAVEYARD,
+    val requirement: RitualRequirement = RitualRequirement.LEVEL_OR_MORE,
+    /** [RitualRequirement.COUNT] のときに必要な体数。 */
+    val count: Int = 1,
+    /** 選べる表示形式。2つ以上あれば処理のときにプレイヤーが選ぶ。 */
+    val positionChoices: List<Position> = listOf(Position.ATTACK)
+) : Action {
+    val choices: List<Position> get() = positionChoices.ifEmpty { listOf(Position.ATTACK) }
+}
 
 /**
  * フェイズやターンの進み方を変える述語。
