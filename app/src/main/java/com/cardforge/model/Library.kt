@@ -62,6 +62,8 @@ data class CardDef(
     val isToken: Boolean = false,
     /** 「通常召喚できない」カード。 */
     val cannotNormalSummon: Boolean = false,
+    /** 「特殊召喚できない」カード。 */
+    val cannotSpecialSummon: Boolean = false,
     /**
      * 「〜の効果によってのみ特殊召喚できる」。
      * 空なら特殊召喚のしかたを問わない。

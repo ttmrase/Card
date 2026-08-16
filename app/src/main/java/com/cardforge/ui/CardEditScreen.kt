@@ -233,6 +233,14 @@ fun CardEditScreen(
                         Text("通常召喚できない")
                     }
 
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(
+                            checked = card.cannotSpecialSummon,
+                            onCheckedChange = { card = card.copy(cannotSpecialSummon = it) }
+                        )
+                        Text("特殊召喚できない")
+                    }
+
                     Text(
                         "特殊召喚できる効果を限定する（空なら制限なし）",
                         style = MaterialTheme.typography.labelSmall,

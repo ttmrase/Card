@@ -111,6 +111,11 @@ fun EffectEditorSection(
                 }
             )
 
+            NoResponsePicker(
+                selected = effect.noResponseFrom,
+                label = "【制限】この発動に対して効果を発動できない側"
+            ) { onChange(effect.copy(noResponseFrom = it)) }
+
             HorizontalDivider()
             Text(
                 "【発動後】",
@@ -437,6 +442,11 @@ private fun ClauseEditor(
             onEdit = { onLockSlot(slot(null, it)) },
             onRemove = { onChange(clause.copy(summonLocks = clause.summonLocks.removedAt(it))) }
         )
+
+        NoResponsePicker(
+            selected = clause.noResponseFrom,
+            label = "この効果だけの【制限】この発動に対して効果を発動できない側"
+        ) { onChange(clause.copy(noResponseFrom = it)) }
 
         Text(
             "この効果だけの【発動後】",
@@ -840,5 +850,34 @@ private fun EditableList(
             }
         }
         Chip(addLabel, onClick = onAdd)
+    }
+}
+
+/** 「この効果の発動に対して〜はカードの効果を発動できない」の指定。 */
+@Composable
+private fun NoResponsePicker(
+    selected: PlayerRef?,
+    label: String,
+    onChange: (PlayerRef?) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        FlowRowSimple {
+            Chip("制限なし", selected = selected == null) { onChange(null) }
+            PlayerRef.all.forEach { candidate ->
+                Chip(candidate.label, selected = selected == candidate) { onChange(candidate) }
+            }
+        }
+        if (selected != null) {
+            Text(
+                EffectTextRenderer.noResponseToText(selected) + "。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
     }
 }

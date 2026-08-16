@@ -216,7 +216,9 @@ fun ActionDialog(
         )
     }
     var tokenId by remember { mutableStateOf((initial as? CreateTokenAction)?.tokenCardId) }
-    var tokenCount by remember { mutableIntStateOf((initial as? CreateTokenAction)?.count ?: 1) }
+    var tokenCount by remember {
+        mutableStateOf((initial as? CreateTokenAction)?.countSpec ?: FixedValue(1))
+    }
     var tokenPositions by remember {
         mutableStateOf((initial as? CreateTokenAction)?.choices ?: listOf(Position.ATTACK))
     }
@@ -266,7 +268,8 @@ fun ActionDialog(
         ActionType.GRANT_EFFECT -> GrantEffectAction(scope, granted)
         ActionType.ADVANCE_PHASE -> AdvancePhaseAction(advance)
         ActionType.MATERIAL_SUMMON -> material
-        ActionType.CREATE_TOKEN -> CreateTokenAction(tokenId, tokenCount, who, tokenPositions)
+        ActionType.CREATE_TOKEN ->
+            CreateTokenAction(tokenId, 1, who, tokenPositions, countValue = tokenCount)
         ActionType.ADD_COUNTER -> AddCounterAction(scope, counterId, counterAmount)
         ActionType.REMOVE_COUNTER -> RemoveCounterAction(scope, counterId, counterAmount)
         ActionType.REPLACE_DESTINATION -> ReplaceDestinationAction(scope, replaceTo)
@@ -555,7 +558,7 @@ fun ActionDialog(
                                 { it.name }
                             ) { tokenId = it.id }
                         }
-                        NumberField("体数", tokenCount) { tokenCount = it.coerceIn(1, 5) }
+                        ValueSpecEditor("体数", tokenCount, master) { tokenCount = it }
                         Text(
                             "選べる表示形式",
                             style = MaterialTheme.typography.labelSmall,
@@ -843,9 +846,16 @@ fun ConditionDialog(
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+
                         Text(
                             "出来事を起こしたカードを限定する（任意）",
                             style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            "「「VALIS」モンスターの効果によって」のように、" +
+                                "出来事を起こした側のカードを絞れます。",
+                            style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         FlowRowSimple {
@@ -857,6 +867,7 @@ fun ConditionDialog(
                             }
                             Chip("＋ 起こした側の条件") { showSourceFilter = true }
                         }
+
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Checkbox(
                                 checked = eventSelfOnly,

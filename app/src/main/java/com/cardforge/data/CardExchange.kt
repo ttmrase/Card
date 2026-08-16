@@ -185,6 +185,8 @@ object IdRemapper {
         is DamageAction -> action.copy(amountValue = action.amountValue?.let { remapValue(it, m) })
         is RecoverAction -> action.copy(amountValue = action.amountValue?.let { remapValue(it, m) })
         is DrawAction -> action.copy(countValue = action.countValue?.let { remapValue(it, m) })
+        is CreateTokenAction ->
+            action.copy(countValue = action.countValue?.let { remapValue(it, m) })
         is MillAction -> action.copy(countValue = action.countValue?.let { remapValue(it, m) })
         is DiscardAction -> action.copy(countValue = action.countValue?.let { remapValue(it, m) })
         else -> action
@@ -332,6 +334,7 @@ object IdRemapper {
             is DamageAction -> collectValue(action.amountValue, ids)
             is RecoverAction -> collectValue(action.amountValue, ids)
             is DrawAction -> collectValue(action.countValue, ids)
+            is CreateTokenAction -> collectValue(action.countValue, ids)
             is MillAction -> collectValue(action.countValue, ids)
             is DiscardAction -> collectValue(action.countValue, ids)
             else -> Unit

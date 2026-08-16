@@ -83,6 +83,42 @@ class GameEngine(
      */
     private val resolvingCards = mutableSetOf<String>()
 
+    /**
+     * 「この効果の発動に対して〜はカードの効果を発動できない」が働いている間、
+     * 割り込めなくなる側。
+     */
+    private var noResponseFrom: PlayerRef? = null
+    private var noResponseActivator: PlayerState? = null
+
+    /** [player] が、いま起きている発動に割り込めるか。 */
+    private fun canRespondNow(player: PlayerState): Boolean {
+        val blocked = noResponseFrom ?: return true
+        val activator = noResponseActivator ?: return true
+        return when (blocked) {
+            PlayerRef.BOTH -> false
+            PlayerRef.SELF -> player !== activator
+            PlayerRef.OPPONENT -> player === activator
+        }
+    }
+
+    /** [block] の間、この発動に対して割り込めなくする。 */
+    private inline fun <R> withoutResponses(
+        from: PlayerRef?,
+        activator: PlayerState,
+        block: () -> R
+    ): R {
+        val prevFrom = noResponseFrom
+        val prevActivator = noResponseActivator
+        noResponseFrom = from
+        noResponseActivator = activator
+        try {
+            return block()
+        } finally {
+            noResponseFrom = prevFrom
+            noResponseActivator = prevActivator
+        }
+    }
+
     /** 種類を指定しなかったカウンターの置き場。 */
     private val DEFAULT_COUNTER = "counter"
 
@@ -1248,7 +1284,7 @@ class GameEngine(
                 lastAffected = targets
             }
 
-            is CreateTokenAction -> runCreateToken(action, controller)
+            is CreateTokenAction -> runCreateToken(action, controller, source)
 
             // 処理の差し替えは【発動タイプ】が「永続」のときだけ働く。
             is ReplaceDestinationAction ->
@@ -1932,9 +1968,12 @@ class GameEngine(
 
         recordActivation(inst, CARD_ACTIVATION, controller)
         applySummonLocks(effect.summonLocks, controller)
-        emit(GameEvent(GameEventType.ACTIVATED, controller.index, inst))
 
-        if (offerResponse(controller, "「${inst.card.name}」の発動")) {
+        val blocked = withoutResponses(effect.noResponseFrom, controller) {
+            emit(GameEvent(GameEventType.ACTIVATED, controller.index, inst))
+            offerResponse(controller, "「${inst.card.name}」の発動")
+        }
+        if (blocked) {
             log("「${inst.card.name}」の発動は無効になった。")
             disposeAfterActivation(inst, AfterActivation.TO_GRAVE)
             return true
@@ -2108,10 +2147,12 @@ class GameEngine(
         recordActivation(inst, clauseIndex, controller)
         // 【制限】の召喚制限は、発動した時点で掛かる（無効にされても残る）。
         applySummonLocks(effect.summonLocksFor(clauseIndex), controller)
-        emit(GameEvent(GameEventType.ACTIVATED, controller.index, inst))
 
-        // 相手に応答（罠）の機会を与える。
-        val negated = offerResponse(controller, "「${inst.card.name}」の発動")
+        // 「この発動に対して効果を発動できない」は、発動を知らせる前から働く。
+        val negated = withoutResponses(effect.noResponseFor(clauseIndex), controller) {
+            emit(GameEvent(GameEventType.ACTIVATED, controller.index, inst))
+            offerResponse(controller, "「${inst.card.name}」の発動")
+        }
         if (negated) {
             log("「${inst.card.name}」の発動は無効になった。")
             if (isSpellOrTrap) disposeAfterActivation(inst, AfterActivation.TO_GRAVE) else destroy(inst)
@@ -2175,6 +2216,7 @@ class GameEngine(
             .filter { it.card.kind == CardKind.MONSTER }
         return targets.any { target ->
             if (!summonAllowed(target, controller, SummonKind.SPECIAL)) return@any false
+            if (!specialSummonSourceAllowed(target, source)) return@any false
             val pool = candidates(action.material, controller, source).filter { it !== target }
             canMeetMaterial(action, pool, materialNeed(action, target))
         }
@@ -2192,6 +2234,7 @@ class GameEngine(
         val targets = candidates(action.summon, controller, source)
             .filter { it.card.kind == CardKind.MONSTER }
             .filter { summonAllowed(it, controller, SummonKind.SPECIAL) }
+            .filter { specialSummonSourceAllowed(it, source) }
             .filter { target ->
                 val pool = candidates(action.material, controller, source).filter { it !== target }
                 canMeetMaterial(action, pool, materialNeed(action, target))
@@ -2270,7 +2313,11 @@ class GameEngine(
     }
 
     /** トークンを特殊召喚する。 */
-    private suspend fun runCreateToken(action: CreateTokenAction, controller: PlayerState) {
+    private suspend fun runCreateToken(
+        action: CreateTokenAction,
+        controller: PlayerState,
+        source: CardInstance?
+    ) {
         val def = state.tokenDefs.firstOrNull { it.id == action.tokenCardId }
         if (def == null) {
             log("出すトークンが見つからない。")
@@ -2278,7 +2325,8 @@ class GameEngine(
         }
         val destination = primaryPlayer(action.controller, controller)
         val created = mutableListOf<CardInstance>()
-        repeat(action.count.coerceAtLeast(1)) {
+        val howMany = resolveValue(action.countSpec, controller, source).coerceAtLeast(0)
+        repeat(howMany) {
             val zone = destination.freeMonsterZones().firstOrNull()
             if (zone == null) {
                 log("モンスターゾーンに空きが無いためトークンを出せない。")
@@ -2379,6 +2427,10 @@ class GameEngine(
     private suspend fun offerResponse(activator: PlayerState, description: String): Boolean {
         if (responseDepth > 0 || state.finished) return false
         val responder = state.opponentOf(activator)
+        if (!canRespondNow(responder)) {
+            log("この発動に対しては効果を発動できない。")
+            return false
+        }
         val cards = respondableCards(responder)
         if (cards.isEmpty()) return false
 
@@ -2460,6 +2512,8 @@ class GameEngine(
         // ターンプレイヤー側から順に見る。解決中に盤面が変わるので控えを取る。
         val order = listOf(state.turnPlayer, state.nonTurnPlayer)
         for (player in order) {
+            // 「この発動に対して効果を発動できない」の間は、発動への誘発も止める。
+            if (event.type == GameEventType.ACTIVATED && !canRespondNow(player)) continue
             val candidates = (
                 player.monsters + player.spellsAndTraps + player.hand + player.graveyard
                 ).toList()
@@ -2544,6 +2598,7 @@ class GameEngine(
      * [by] はそのカードを出そうとしている効果の持ち主。
      */
     fun specialSummonSourceAllowed(inst: CardInstance, by: CardInstance?): Boolean {
+        if (inst.card.cannotSpecialSummon) return false
         val required = inst.card.specialSummonOnlyBy
         if (required.isEmpty()) return true
         val from = by ?: return false

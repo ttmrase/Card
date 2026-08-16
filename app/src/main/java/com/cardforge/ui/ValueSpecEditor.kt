@@ -23,12 +23,14 @@ fun ValueSpecEditor(
     spec: ValueSpec,
     master: MasterData,
     allowNegative: Boolean = false,
+    /** 「決まった数」を選べるか。枚数の指定では別の欄で入れるので不要。 */
+    allowFixed: Boolean = true,
     onChange: (ValueSpec) -> Unit
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Dropdown(
             label = "決め方",
-            items = ValueKind.all,
+            items = if (allowFixed) ValueKind.all else ValueKind.all - ValueKind.FIXED,
             selected = ValueKind.of(spec),
             itemLabel = { it.label }
         ) { kind -> onChange(kind.create(spec)) }
@@ -125,24 +127,13 @@ fun CountSpecEditor(
     master: MasterData,
     onChange: (ValueSpec) -> Unit
 ) {
-    val counting = spec as? CountValue ?: CountValue(multiplier = 1)
-
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        CardScopeEditor(
-            scope = counting.scope,
-            master = master,
-            showCount = false
-        ) { onChange(counting.copy(scope = it)) }
-
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            NumberField("1枚あたり", counting.multiplier, Modifier.weight(1f)) {
-                onChange(counting.copy(multiplier = it.coerceIn(1, 9)))
-            }
-            NumberField("固定で足す", counting.base, Modifier.weight(1f)) {
-                onChange(counting.copy(base = it.coerceIn(-9, 9)))
-            }
-        }
-    }
+    ValueSpecEditor(
+        label = "枚数",
+        spec = spec,
+        master = master,
+        allowFixed = false,
+        onChange = onChange
+    )
 }
 
 /** 数値の決め方。 */

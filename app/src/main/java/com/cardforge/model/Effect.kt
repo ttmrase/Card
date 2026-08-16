@@ -307,9 +307,12 @@ data class CreateTokenAction(
     val tokenCardId: String? = null,
     val count: Int = 1,
     val controller: PlayerRef = PlayerRef.SELF,
-    val positionChoices: List<Position> = listOf(Position.ATTACK)
+    val positionChoices: List<Position> = listOf(Position.ATTACK),
+    /** 「破壊した数だけ」のように体数を参照して決めるときの指定。 */
+    val countValue: ValueSpec? = null
 ) : Action {
     val choices: List<Position> get() = positionChoices.ifEmpty { listOf(Position.ATTACK) }
+    val countSpec: ValueSpec get() = countValue ?: FixedValue(count)
 }
 
 /**
@@ -747,6 +750,11 @@ data class EffectClause(
     val linkedSteps: List<Int> = emptyList(),
     /** この効果の発動に付く召喚の制限。 */
     val summonLocks: List<SummonLock> = emptyList(),
+    /**
+     * 「この効果の発動に対して〜はカードの効果を発動できない」。
+     * null なら普通どおり割り込める。
+     */
+    val noResponseFrom: PlayerRef? = null,
     /** 旧データ互換。制限欄が空でこれが true なら「1ターンに1度」として扱う。 */
     val oncePerTurn: Boolean = false
 ) {
@@ -801,6 +809,8 @@ data class EffectText(
     val limits: List<UsageLimit> = emptyList(),
     /** どの効果を発動しても掛かる召喚の制限。 */
     val summonLocks: List<SummonLock> = emptyList(),
+    /** どの効果を発動しても、その発動に対して割り込めなくする指定。 */
+    val noResponseFrom: PlayerRef? = null,
     /** 【発動後】。null なら [AfterActivation.DEFAULT]（墓地へ送る）。 */
     val afterActivation: AfterActivation? = null,
     val clauses: List<EffectClause> = emptyList()
@@ -844,6 +854,10 @@ data class EffectText(
     /** [index] 番目の効果を発動したときに掛かる召喚の制限（共通指定を含む）。 */
     fun summonLocksFor(index: Int): List<SummonLock> =
         summonLocks + clauses.getOrNull(index)?.summonLocks.orEmpty()
+
+    /** [index] 番目の効果の発動に対して、割り込めなくなる側。 */
+    fun noResponseFor(index: Int): PlayerRef? =
+        clauses.getOrNull(index)?.noResponseFrom ?: noResponseFrom
 
     /** [index] 番目の効果が誘発即時（相手ターンにも発動できる）か。 */
     fun isQuick(index: Int): Boolean = clauses.getOrNull(index)?.quick == true

@@ -139,6 +139,14 @@ object EffectTextRenderer {
         else -> valueToText(spec, master) + "だけ"
     }
 
+    /**
+     * 「3枚」「〜の数だけ」のように枚数を書く。
+     * 数を参照する指定では「〜だけ」で言い切るので、助数詞は付けない。
+     */
+    private fun amountText(spec: ValueSpec, counterWord: String, master: MasterData): String =
+        if (spec is FixedValue) "${spec.value}$counterWord"
+        else countSpecToText(spec, master)
+
     /** 「を選んで」「をランダムに」など、対象と述語をつなぐ部分。 */
     private fun selectionParticle(scope: CardScope): String {
         // 「このカード」を指しているときは選ぶ余地が無い。
@@ -155,6 +163,10 @@ object EffectTextRenderer {
     // -----------------------------------------------------------------------
     // 述語（効果）
     // -----------------------------------------------------------------------
+
+    /** 「この効果の発動に対して〜はカードの効果を発動できない」という【制限】の文。 */
+    fun noResponseToText(from: PlayerRef): String =
+        "この効果の発動に対して${from.label}はカードの効果を発動できない"
 
     /** 「このカードを発動するターン、〜できない」という【制限】の文。 */
     fun summonLockToText(lock: SummonLock, master: MasterData): String {
@@ -253,7 +265,8 @@ object EffectTextRenderer {
 
         is CreateTokenAction -> {
             val positions = action.choices.joinToString("または") { it.label }
-            "${action.controller.label}のモンスターゾーンにトークン${action.count}体を" +
+            "${action.controller.label}のモンスターゾーンにトークンを" +
+                "${amountText(action.countSpec, "体", master)}、" +
                 "${positions}で特殊召喚する"
         }
 
@@ -307,7 +320,7 @@ object EffectTextRenderer {
                 "${action.position.label}に変更する"
 
         is DrawAction ->
-            "${action.who.label}はカードを${countSpecToText(action.countSpec, master)}枚ドローする"
+            "${action.who.label}はカードを${amountText(action.countSpec, "枚", master)}ドローする"
 
         is DamageAction ->
             "${action.who.label}に${valueToText(action.amountSpec, master)}ポイントのダメージを与える"
@@ -317,12 +330,12 @@ object EffectTextRenderer {
 
         is DiscardAction -> {
             val how = if (action.random) "ランダムに" else ""
-            "${action.who.label}は手札を$how${countSpecToText(action.countSpec, master)}枚捨てる"
+            "${action.who.label}は手札を$how${amountText(action.countSpec, "枚", master)}捨てる"
         }
 
         is MillAction ->
             "${action.who.label}のデッキの上からカードを" +
-                "${countSpecToText(action.countSpec, master)}枚墓地へ送る"
+                "${amountText(action.countSpec, "枚", master)}墓地へ送る"
 
         is SetSpellTrapAction ->
             scopeToText(action.scope, master) + selectionParticle(action.scope) +
@@ -542,7 +555,8 @@ object EffectTextRenderer {
             lines += "【コスト】" + effect.costs.joinToString("、") { costToText(it, master) }
         }
         val cardLimits = effect.limits.map { limitToText(it, master, cardWide = true) } +
-            effect.summonLocks.map { summonLockToText(it, master) }
+            effect.summonLocks.map { summonLockToText(it, master) } +
+            listOfNotNull(effect.noResponseFrom?.let { noResponseToText(it) })
         if (cardLimits.isNotEmpty()) {
             lines += "【制限】" + cardLimits.joinToString("、")
         }
@@ -571,10 +585,10 @@ object EffectTextRenderer {
             if (clause.costs.isNotEmpty()) {
                 prefixes += "【コスト】" + clause.costs.joinToString("、") { costToText(it, master) }
             }
-            if (clause.summonLocks.isNotEmpty()) {
-                prefixes += "【制限】" + clause.summonLocks.joinToString("、") {
-                    summonLockToText(it, master)
-                }
+            val clauseLocks = clause.summonLocks.map { summonLockToText(it, master) } +
+                listOfNotNull(clause.noResponseFrom?.let { noResponseToText(it) })
+            if (clauseLocks.isNotEmpty()) {
+                prefixes += "【制限】" + clauseLocks.joinToString("、")
             }
             // 効果番号ごとの【発動後】は、明示されていれば常に書く。
             clause.afterActivation?.let { prefixes += "【発動後】" + it.label }
