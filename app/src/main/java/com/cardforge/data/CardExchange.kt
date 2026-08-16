@@ -55,7 +55,13 @@ object IdRemapper {
                 conditions = clause.conditions.map { remapCondition(it, m) },
                 costs = clause.costs.map { remapCost(it, m) },
                 limits = clause.limits.map { remapLimit(it, m) },
-                actions = clause.actions.map { remapAction(it, m) }
+                actions = clause.actions.map { remapAction(it, m) },
+                branches = clause.branches.map { branch ->
+                    branch.copy(
+                        conditions = branch.conditions.map { remapCondition(it, m) },
+                        actions = branch.actions.map { remapAction(it, m) }
+                    )
+                }
             )
         }
     )
@@ -64,7 +70,16 @@ object IdRemapper {
         limit.copy(categoryId = limit.categoryId?.let { m[it] ?: it })
 
     private fun remapScope(scope: CardScope, m: Map<String, String>): CardScope =
-        scope.copy(filters = scope.filters.map { remapFilter(it, m) })
+        scope.copy(
+            filters = scope.filters.map { remapFilter(it, m) },
+            countSpec = scope.countSpec?.let { remapValue(it, m) }
+        )
+
+    /** 「〜の数だけ」のような数の指定も、中の対象指定を貼り替える。 */
+    private fun remapValue(spec: ValueSpec, m: Map<String, String>): ValueSpec = when (spec) {
+        is CountValue -> spec.copy(scope = remapScope(spec.scope, m))
+        is FixedValue -> spec
+    }
 
     private fun remapFilter(filter: CardFilter, m: Map<String, String>): CardFilter =
         when (filter) {
@@ -85,6 +100,8 @@ object IdRemapper {
         is DiscardCost -> cost.copy(filters = cost.filters.map { remapFilter(it, m) })
         is TributeCost -> cost.copy(filters = cost.filters.map { remapFilter(it, m) })
         is BanishFromGraveCost -> cost.copy(filters = cost.filters.map { remapFilter(it, m) })
+        is MoveCost -> cost.copy(scope = remapScope(cost.scope, m))
+        is RevealCost -> cost.copy(scope = remapScope(cost.scope, m))
         else -> cost
     }
 
@@ -95,8 +112,25 @@ object IdRemapper {
         is ToGraveAction -> action.copy(scope = remapScope(action.scope, m))
         is ToDeckAction -> action.copy(scope = remapScope(action.scope, m))
         is SpecialSummonAction -> action.copy(scope = remapScope(action.scope, m))
-        is ModifyStatAction -> action.copy(scope = remapScope(action.scope, m))
         is ChangePositionAction -> action.copy(scope = remapScope(action.scope, m))
+        is SetSpellTrapAction -> action.copy(scope = remapScope(action.scope, m))
+        is PlaceSpellTrapAction -> action.copy(scope = remapScope(action.scope, m))
+        is ActivateCardAction -> action.copy(scope = remapScope(action.scope, m))
+        is GrantProtectionAction -> action.copy(scope = remapScope(action.scope, m))
+        is PreventAttackAction -> action.copy(scope = remapScope(action.scope, m))
+        is RevealAction -> action.copy(scope = remapScope(action.scope, m))
+
+        is RestrictSummonAction ->
+            action.copy(filters = action.filters.map { remapFilter(it, m) })
+
+        is ModifyStatAction -> action.copy(
+            scope = remapScope(action.scope, m),
+            deltaValue = action.deltaValue?.let { remapValue(it, m) }
+        )
+
+        is DamageAction -> action.copy(amountValue = action.amountValue?.let { remapValue(it, m) })
+        is RecoverAction -> action.copy(amountValue = action.amountValue?.let { remapValue(it, m) })
+        is DrawAction -> action.copy(countValue = action.countValue?.let { remapValue(it, m) })
         else -> action
     }
 
@@ -116,56 +150,91 @@ object IdRemapper {
         card.raceId?.let(ids::add)
         ids += card.categoryIds
 
-        fun collectFilters(filters: List<CardFilter>) {
-            filters.forEach { filter ->
-                when (filter) {
-                    is AttributeFilter -> ids += filter.attributeId
-                    is RaceFilter -> ids += filter.raceId
-                    is CategoryFilter -> ids += filter.categoryId
-                    else -> Unit
+        card.effect?.let { effect ->
+            effect.conditions.forEach { collectCondition(it, ids) }
+            effect.costs.forEach { collectCost(it, ids) }
+            effect.limits.forEach { limit -> limit.categoryId?.let(ids::add) }
+            effect.clauses.forEach { clause ->
+                clause.conditions.forEach { collectCondition(it, ids) }
+                clause.costs.forEach { collectCost(it, ids) }
+                clause.limits.forEach { limit -> limit.categoryId?.let(ids::add) }
+                clause.actions.forEach { collectAction(it, ids) }
+                clause.branches.forEach { branch ->
+                    branch.conditions.forEach { collectCondition(it, ids) }
+                    branch.actions.forEach { collectAction(it, ids) }
                 }
             }
         }
+        card.continuous.forEach { collectScope(it.scope, ids) }
+        return ids
+    }
 
-        fun collectScope(scope: CardScope?) = scope?.let { collectFilters(it.filters) }
-
-        fun collectCondition(condition: Condition) = when (condition) {
-            is CardExistsCondition -> collectScope(condition.scope)
-            is EventCondition -> collectFilters(condition.filters)
-            else -> Unit
-        }
-
-        fun collectCost(cost: Cost) = when (cost) {
-            is DiscardCost -> collectFilters(cost.filters)
-            is TributeCost -> collectFilters(cost.filters)
-            is BanishFromGraveCost -> collectFilters(cost.filters)
-            else -> Unit
-        }
-
-        fun collectAction(action: Action) = when (action) {
-            is DestroyAction -> collectScope(action.scope)
-            is BanishAction -> collectScope(action.scope)
-            is ToHandAction -> collectScope(action.scope)
-            is ToGraveAction -> collectScope(action.scope)
-            is ToDeckAction -> collectScope(action.scope)
-            is SpecialSummonAction -> collectScope(action.scope)
-            is ModifyStatAction -> collectScope(action.scope)
-            is ChangePositionAction -> collectScope(action.scope)
-            else -> Unit
-        }
-
-        card.effect?.let { effect ->
-            effect.conditions.forEach(::collectCondition)
-            effect.costs.forEach(::collectCost)
-            effect.limits.forEach { limit -> limit.categoryId?.let(ids::add) }
-            effect.clauses.forEach { clause ->
-                clause.conditions.forEach(::collectCondition)
-                clause.costs.forEach(::collectCost)
-                clause.limits.forEach { limit -> limit.categoryId?.let(ids::add) }
-                clause.actions.forEach(::collectAction)
+    private fun collectFilters(filters: List<CardFilter>, ids: MutableSet<String>) {
+        filters.forEach { filter ->
+            when (filter) {
+                is AttributeFilter -> ids += filter.attributeId
+                is RaceFilter -> ids += filter.raceId
+                is CategoryFilter -> ids += filter.categoryId
+                else -> Unit
             }
         }
-        card.continuous.forEach { collectScope(it.scope) }
-        return ids
+    }
+
+    private fun collectScope(scope: CardScope?, ids: MutableSet<String>) {
+        if (scope == null) return
+        collectFilters(scope.filters, ids)
+        collectValue(scope.countSpec, ids)
+    }
+
+    private fun collectValue(spec: ValueSpec?, ids: MutableSet<String>) {
+        if (spec is CountValue) collectScope(spec.scope, ids)
+    }
+
+    private fun collectCondition(condition: Condition, ids: MutableSet<String>) {
+        when (condition) {
+            is CardExistsCondition -> collectScope(condition.scope, ids)
+            is EventCondition -> collectFilters(condition.filters, ids)
+            else -> Unit
+        }
+    }
+
+    private fun collectCost(cost: Cost, ids: MutableSet<String>) {
+        when (cost) {
+            is DiscardCost -> collectFilters(cost.filters, ids)
+            is TributeCost -> collectFilters(cost.filters, ids)
+            is BanishFromGraveCost -> collectFilters(cost.filters, ids)
+            is MoveCost -> collectScope(cost.scope, ids)
+            is RevealCost -> collectScope(cost.scope, ids)
+            else -> Unit
+        }
+    }
+
+    private fun collectAction(action: Action, ids: MutableSet<String>) {
+        when (action) {
+            is DestroyAction -> collectScope(action.scope, ids)
+            is BanishAction -> collectScope(action.scope, ids)
+            is ToHandAction -> collectScope(action.scope, ids)
+            is ToGraveAction -> collectScope(action.scope, ids)
+            is ToDeckAction -> collectScope(action.scope, ids)
+            is SpecialSummonAction -> collectScope(action.scope, ids)
+            is ChangePositionAction -> collectScope(action.scope, ids)
+            is SetSpellTrapAction -> collectScope(action.scope, ids)
+            is PlaceSpellTrapAction -> collectScope(action.scope, ids)
+            is ActivateCardAction -> collectScope(action.scope, ids)
+            is GrantProtectionAction -> collectScope(action.scope, ids)
+            is PreventAttackAction -> collectScope(action.scope, ids)
+            is RevealAction -> collectScope(action.scope, ids)
+            is RestrictSummonAction -> collectFilters(action.filters, ids)
+
+            is ModifyStatAction -> {
+                collectScope(action.scope, ids)
+                collectValue(action.deltaValue, ids)
+            }
+
+            is DamageAction -> collectValue(action.amountValue, ids)
+            is RecoverAction -> collectValue(action.amountValue, ids)
+            is DrawAction -> collectValue(action.countValue, ids)
+            else -> Unit
+        }
     }
 }

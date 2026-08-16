@@ -189,10 +189,41 @@ fun CardScopeEditor(
                 Dropdown(
                     "選び方", SelectionMode.all, scope.selection, { it.label }, Modifier.weight(1f)
                 ) { onChange(scope.copy(selection = it)) }
-                if (scope.selection != SelectionMode.ALL) {
+                if (scope.selection != SelectionMode.ALL && scope.countSpec == null) {
                     NumberField("枚数／体数", scope.count, Modifier.weight(1f)) {
                         onChange(scope.copy(count = it.coerceIn(1, 9)))
                     }
+                }
+            }
+
+            if (scope.selection != SelectionMode.ALL) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(
+                        checked = scope.countSpec != null,
+                        onCheckedChange = { useCount ->
+                            onChange(
+                                scope.copy(
+                                    countSpec = if (useCount) CountValue(multiplier = 1) else null
+                                )
+                            )
+                        }
+                    )
+                    Text("枚数を別のカードの枚数から決める")
+                }
+                scope.countSpec?.let { spec ->
+                    Text(
+                        "「〜の数だけ」の〜にあたるカード",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    CountSpecEditor(spec, master) { onChange(scope.copy(countSpec = it)) }
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(
+                        checked = scope.upTo,
+                        onCheckedChange = { onChange(scope.copy(upTo = it)) }
+                    )
+                    Text("「〜まで」（足りなくても発動できる）")
                 }
             }
         }

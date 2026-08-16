@@ -59,8 +59,21 @@ data class CardScope(
     val count: Int = 1,
     val selection: SelectionMode = SelectionMode.CHOOSE,
     /** この効果を持つカード自身だけを指す。true のとき他の指定は見ない。 */
-    val selfOnly: Boolean = false
-)
+    val selfOnly: Boolean = false,
+    /**
+     * 枚数を「〜の数だけ」のように別のカードの枚数から決める。
+     * null なら [count] をそのまま使う。
+     */
+    val countSpec: ValueSpec? = null,
+    /**
+     * 「〜まで」。対象がその数に足りなくても、あるだけ処理する。
+     * これを付けた指定は、発動時の「最後まで処理できるか」の判定でも数に数えない。
+     */
+    val upTo: Boolean = false
+) {
+    /** 枚数の指定。[countSpec] があればそちらが優先される。 */
+    val countValue: ValueSpec get() = countSpec ?: FixedValue(count)
+}
 
 // ---------------------------------------------------------------------------
 // 数値の指定。固定値のほか「条件を満たすカードの枚数×係数」を書ける。
@@ -141,9 +154,51 @@ data class ModifyStatAction(
 @SerialName("changePosition")
 data class ChangePositionAction(val scope: CardScope, val position: Position) : Action
 
+/**
+ * 「このターン、〜は…を特殊召喚できない」という召喚の制限。
+ *
+ * [except] が true なら「[filters] に当てはまるもの**以外**を出せない」、
+ * false なら「[filters] に当てはまるものを出せない」という意味になる。
+ * 制限はこのターンの間だけ続く。
+ */
+@Serializable
+@SerialName("restrictSummon")
+data class RestrictSummonAction(
+    val who: PlayerRef = PlayerRef.SELF,
+    val summon: SummonKind = SummonKind.SPECIAL,
+    val filters: List<CardFilter> = emptyList(),
+    val except: Boolean = true,
+    /** 「このカードを発動するターン」と書きたいときに true。 */
+    val fromActivation: Boolean = true
+) : Action
+
+/**
+ * カードを相手に見せる。
+ *
+ * [RevealDuration.MOMENT] はその場で見せるだけ、それ以外は指定した長さのあいだ
+ * 表にしたままにする（相手の画面にも中身が出る）。
+ */
+@Serializable
+@SerialName("reveal")
+data class RevealAction(
+    val scope: CardScope = CardScope(
+        who = PlayerRef.SELF,
+        zone = ZoneType.HAND,
+        selection = SelectionMode.ALL
+    ),
+    val duration: RevealDuration = RevealDuration.MOMENT
+) : Action
+
 @Serializable
 @SerialName("draw")
-data class DrawAction(val who: PlayerRef, val count: Int) : Action
+data class DrawAction(
+    val who: PlayerRef,
+    val count: Int = 1,
+    /** 「〜の数だけドローする」と書きたいときの枚数指定。 */
+    val countValue: ValueSpec? = null
+) : Action {
+    val countSpec: ValueSpec get() = countValue ?: FixedValue(count)
+}
 
 @Serializable
 @SerialName("damage")
@@ -342,6 +397,18 @@ data class MoveCost(
 @Serializable
 @SerialName("selfCost")
 data class DiscardSelfCost(val banish: Boolean = false) : Cost
+
+/** コストとしてカードを見せる（公開する）。 */
+@Serializable
+@SerialName("revealCost")
+data class RevealCost(
+    val scope: CardScope = CardScope(
+        who = PlayerRef.SELF,
+        zone = ZoneType.HAND,
+        selection = SelectionMode.ALL
+    ),
+    val duration: RevealDuration = RevealDuration.MOMENT
+) : Cost
 
 // ---------------------------------------------------------------------------
 // 【制限】

@@ -35,6 +35,16 @@ class CardInstance(
     /** 発動する効果で、そのターン攻撃を封じられているか。 */
     var attackLockedThisTurn by mutableStateOf(false)
 
+    /**
+     * 公開されている（相手にも見えている）ターン。
+     * [PERMANENT_REVEAL] ならその領域にある限りずっと公開。-1 は非公開。
+     */
+    var revealedUntilTurn by mutableIntStateOf(-1)
+
+    /** [turn] の時点で相手にも見えているか。 */
+    fun isRevealed(turn: Int): Boolean =
+        revealedUntilTurn == PERMANENT_REVEAL || revealedUntilTurn >= turn
+
     val atkValue: Int get() = (card.atk + atkMod).coerceAtLeast(0)
     val defValue: Int get() = (card.def + defMod).coerceAtLeast(0)
 
@@ -53,7 +63,23 @@ class CardInstance(
     }
 
     override fun toString(): String = "${card.name}#${uid.take(4)}"
+
+    companion object {
+        /** [revealedUntilTurn] に入れると、ずっと公開し続ける。 */
+        const val PERMANENT_REVEAL = Int.MAX_VALUE
+    }
 }
+
+/**
+ * 「このターン、〜以外を特殊召喚できない」という召喚の制限。
+ * ターンの終わりに消える。
+ */
+data class SummonRestriction(
+    val summon: SummonKind,
+    val filters: List<CardFilter>,
+    /** true なら [filters] に当てはまるもの「以外」を禁止する。 */
+    val except: Boolean
+)
 
 /**
  * そのターンに発動した効果の記録。【制限】を同名カードやカテゴリの単位で
@@ -93,6 +119,9 @@ class PlayerState(
     /** そのターンに発動した効果の記録（【制限】の判定に使う）。 */
     val activationsThisTurn: SnapshotStateList<ActivationRecord> = mutableStateListOf()
 
+    /** そのターンに掛けられた召喚の制限。 */
+    val summonRestrictions: SnapshotStateList<SummonRestriction> = mutableStateListOf()
+
     val monsters: List<CardInstance> get() = monsterZones.filterNotNull()
     val spellsAndTraps: List<CardInstance> get() = spellTrapZones.filterNotNull()
 
@@ -106,7 +135,9 @@ class PlayerState(
 }
 
 class GameState(
-    val players: List<PlayerState>
+    val players: List<PlayerState>,
+    /** カード名・属性名などを引くための一覧。ログの文面に使う。 */
+    val master: MasterData = MasterData()
 ) {
     var turn by mutableIntStateOf(1)
     var turnPlayerIndex by mutableIntStateOf(0)
@@ -146,7 +177,7 @@ object GameSetup {
         fillDeck(p0, library, deckA)
         fillDeck(p1, library, deckB)
 
-        val state = GameState(listOf(p0, p1))
+        val state = GameState(listOf(p0, p1), library.master)
         state.turnPlayerIndex = firstPlayer
         state.turn = 1
         state.phase = Phase.MAIN1

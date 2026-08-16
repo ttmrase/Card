@@ -92,7 +92,11 @@ fun DuelScreen(
                 thinking = controller.aiThinking && top.index == controller.aiIndex,
                 onOpenZone = { title, cards -> zoneViewer = title to cards }
             )
-            FaceDownHand(count = top.hand.size)
+            OpponentHand(
+                hand = top.hand,
+                turn = state.turn,
+                onInspect = { detail = it }
+            )
             ZoneRow(
                 zones = top.spellTrapZones,
                 ownerIndex = top.index,
@@ -331,19 +335,37 @@ private fun PlayerBanner(
     }
 }
 
+/**
+ * 相手の手札。ふだんは裏側だが、効果で公開されたカードは表にして見せる。
+ */
 @Composable
-private fun FaceDownHand(count: Int) {
+private fun OpponentHand(
+    hand: List<CardInstance>,
+    turn: Int,
+    onInspect: (CardInstance) -> Unit
+) {
+    val shown = hand.take(10)
     Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
-        repeat(count.coerceAtMost(10)) {
-            Box(
-                Modifier
-                    .size(width = 22.dp, height = 32.dp)
-                    .clip(RoundedCornerShape(3.dp))
-                    .background(Surface2)
-                    .border(1.dp, Accent.copy(alpha = 0.4f), RoundedCornerShape(3.dp))
-            )
+        shown.forEach { card ->
+            if (card.isRevealed(turn)) {
+                FieldCard(
+                    inst = card,
+                    revealed = true,
+                    modifier = Modifier.size(width = 32.dp, height = 46.dp),
+                    onClick = { onInspect(card) },
+                    onLongClick = { onInspect(card) }
+                )
+            } else {
+                Box(
+                    Modifier
+                        .size(width = 22.dp, height = 32.dp)
+                        .clip(RoundedCornerShape(3.dp))
+                        .background(Surface2)
+                        .border(1.dp, Accent.copy(alpha = 0.4f), RoundedCornerShape(3.dp))
+                )
+            }
         }
-        if (count > 10) Text("+${count - 10}", fontSize = 10.sp)
+        if (hand.size > 10) Text("+${hand.size - 10}", fontSize = 10.sp)
     }
 }
 

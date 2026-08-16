@@ -31,6 +31,80 @@ object DefaultData {
         val knight = categories[1].id
 
         val cards = listOf(
+            // --- 召喚制限・枚数参照・公開をまとめて使うサーチ魔法 ---
+            CardDef(
+                id = newId(),
+                name = "アララギの号令",
+                kind = CardKind.SPELL,
+                categoryIds = listOf(araragi),
+                effect = EffectText(
+                    locations = listOf(ActivationLocation.FIELD),
+                    clauses = listOf(
+                        // 発動しただけで掛かる、そのターンの召喚制限。
+                        EffectClause(
+                            mode = ActivationMode.ON_ACTIVATION,
+                            actions = listOf(
+                                RestrictSummonAction(
+                                    who = PlayerRef.SELF,
+                                    summon = SummonKind.SPECIAL,
+                                    filters = listOf(CategoryFilter(araragi)),
+                                    except = true,
+                                    fromActivation = true
+                                )
+                            )
+                        ),
+                        EffectClause(
+                            mode = ActivationMode.OPTIONAL,
+                            actions = listOf(
+                                ToHandAction(
+                                    CardScope(
+                                        who = PlayerRef.SELF,
+                                        zone = ZoneType.DECK,
+                                        filters = listOf(
+                                            CategoryFilter(araragi),
+                                            KindFilter(CardKind.SPELL)
+                                        ),
+                                        count = 1
+                                    )
+                                ),
+                                RevealAction(
+                                    CardScope(
+                                        who = PlayerRef.SELF,
+                                        zone = ZoneType.HAND,
+                                        selection = SelectionMode.ALL
+                                    ),
+                                    RevealDuration.MOMENT
+                                ),
+                                ToGraveAction(
+                                    CardScope(
+                                        who = PlayerRef.SELF,
+                                        zone = ZoneType.DECK,
+                                        filters = listOf(
+                                            CategoryFilter(araragi),
+                                            KindFilter(CardKind.MONSTER)
+                                        ),
+                                        countSpec = CountValue(
+                                            scope = CardScope(
+                                                who = PlayerRef.SELF,
+                                                zone = ZoneType.HAND,
+                                                filters = listOf(
+                                                    CategoryFilter(araragi),
+                                                    KindFilter(CardKind.SPELL)
+                                                ),
+                                                selection = SelectionMode.ALL
+                                            ),
+                                            multiplier = 1
+                                        ),
+                                        upTo = true
+                                    )
+                                )
+                            )
+                        )
+                    )
+                ),
+                flavor = "旗のもとに集え。"
+            ),
+
             // --- 効果を持たない通常モンスター ---
             CardDef(
                 id = newId(),

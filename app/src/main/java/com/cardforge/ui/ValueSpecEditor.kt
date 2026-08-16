@@ -82,3 +82,34 @@ fun ValueSpecEditor(
         }
     }
 }
+
+/**
+ * 「〜の数だけ」の枚数指定。数を数えるカードだけを組み立てる。
+ *
+ * [CardScopeEditor] を枚数なしで呼ぶので、ここから先は入れ子にならない。
+ */
+@Composable
+fun CountSpecEditor(
+    spec: ValueSpec,
+    master: MasterData,
+    onChange: (ValueSpec) -> Unit
+) {
+    val counting = spec as? CountValue ?: CountValue(multiplier = 1)
+
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        CardScopeEditor(
+            scope = counting.scope,
+            master = master,
+            showCount = false
+        ) { onChange(counting.copy(scope = it)) }
+
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            NumberField("1枚あたり", counting.multiplier, Modifier.weight(1f)) {
+                onChange(counting.copy(multiplier = it.coerceIn(1, 9)))
+            }
+            NumberField("固定で足す", counting.base, Modifier.weight(1f)) {
+                onChange(counting.copy(base = it.coerceIn(-9, 9)))
+            }
+        }
+    }
+}

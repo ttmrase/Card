@@ -88,11 +88,34 @@ object EffectTextRenderer {
         if (scope.selfOnly) return "このカード"
         val prefix = zonePrefix(scope.who, scope.zone)
         val noun = filtersToNoun(scope.filters, master, scope.zone)
-        return when {
-            scope.selection == SelectionMode.ALL -> "${prefix}全ての$noun"
-            withCount -> "$prefix$noun${scope.count}${counter(scope)}"
-            else -> "$prefix$noun"
+        if (scope.selection == SelectionMode.ALL) return "${prefix}全ての$noun"
+        if (!withCount) return "$prefix$noun"
+
+        // 「〜の数だけ」と書く場合は、数の話を先に出したほうが読みやすい。
+        val spec = scope.countSpec
+        if (spec is CountValue) {
+            val tail = if (scope.upTo) "まで、" else "だけ、"
+            return countSourceToText(spec, master) + tail + prefix + noun
         }
+
+        val amount = if (spec is FixedValue) spec.value else scope.count
+        val limit = if (scope.upTo) "まで" else ""
+        return "$prefix$noun$amount${counter(scope)}$limit"
+    }
+
+    /** 「自分の手札の「VALIS」魔法カードの数」のような、数える対象の表現。 */
+    private fun countSourceToText(spec: CountValue, master: MasterData): String = buildString {
+        val scope = spec.scope.copy(selection = SelectionMode.CHOOSE)
+        append(scopeToText(scope, master, withCount = false))
+        append("の数")
+        if (spec.multiplier != 1) append("×${spec.multiplier}")
+        if (spec.base != 0) append("＋${spec.base}")
+    }
+
+    /** ドローなど、枚数そのものを書きたいときの表現。 */
+    private fun countSpecToText(spec: ValueSpec, master: MasterData): String = when (spec) {
+        is FixedValue -> spec.value.toString()
+        is CountValue -> countSourceToText(spec, master) + "だけ"
     }
 
     /** 「を選んで」「をランダムに」など、対象と述語をつなぐ部分。 */
@@ -112,7 +135,32 @@ object EffectTextRenderer {
     // 述語（効果）
     // -----------------------------------------------------------------------
 
+    /** 「〜以外のモンスターを特殊召喚できない」という制限の文。 */
+    fun restrictSummonToText(action: RestrictSummonAction, master: MasterData): String {
+        val lead = if (action.fromActivation) "このカードを発動するターン、" else "このターン、"
+        val noun =
+            if (action.filters.isEmpty()) "モンスター"
+            else filtersToNoun(action.filters, master, ZoneType.MONSTER_ZONE)
+        val target = if (action.except) "${noun}以外のモンスター" else noun
+        return "$lead${action.who.label}は${target}を${action.summon.label}できない"
+    }
+
+    /** 「手札を相手に見せる」という文。 */
+    fun revealToText(scope: CardScope, duration: RevealDuration, master: MasterData): String {
+        val what = scopeToText(scope, master)
+        val tail = when (duration) {
+            RevealDuration.MOMENT -> "を相手に見せる"
+            RevealDuration.TURN -> "を相手に見せ、このターンの間公開したままにする"
+            RevealDuration.PERMANENT -> "を相手に見せ、公開したままにする"
+        }
+        return "$what$tail"
+    }
+
     fun actionToText(action: Action, master: MasterData): String = when (action) {
+        is RestrictSummonAction -> restrictSummonToText(action, master)
+
+        is RevealAction -> revealToText(action.scope, action.duration, master)
+
         is DestroyAction ->
             scopeToText(action.scope, master) + selectionParticle(action.scope) + "破壊する"
 
@@ -150,7 +198,8 @@ object EffectTextRenderer {
             scopeToText(action.scope, master) + selectionParticle(action.scope) +
                 "${action.position.label}に変更する"
 
-        is DrawAction -> "${action.who.label}はカードを${action.count}枚ドローする"
+        is DrawAction ->
+            "${action.who.label}はカードを${countSpecToText(action.countSpec, master)}枚ドローする"
 
         is DamageAction ->
             "${action.who.label}に${valueToText(action.amountSpec, master)}ポイントのダメージを与える"
@@ -251,6 +300,8 @@ object EffectTextRenderer {
 
         is MoveCost ->
             scopeToText(cost.scope, master) + "を" + cost.destination.label
+
+        is RevealCost -> revealToText(cost.scope, cost.duration, master)
     }
 
     /** 数値の指定を文にする。「自分の墓地のモンスターの数×100」など。 */
@@ -272,9 +323,15 @@ object EffectTextRenderer {
      * [cardWide] は効果番号より前に書かれた制限かどうか。
      * 掛ける効果を指定している場合は、その番号も文に出す。
      */
-    fun limitToText(limit: UsageLimit, master: MasterData, cardWide: Boolean): String {
+    fun limitToText(
+        limit: UsageLimit,
+        master: MasterData,
+        cardWide: Boolean,
+        /** 効果番号の書き方。番号を振らない効果があるカードでずれないようにする。 */
+        numbering: (Int) -> String = ::circledNumber
+    ): String {
         val times = limit.times.coerceAtLeast(1)
-        val numbers = limit.clauseIndices.sorted().joinToString("") { circledNumber(it) }
+        val numbers = limit.clauseIndices.sorted().joinToString("") { numbering(it) }
 
         // 数える単位だけで意味が通る場合は、主語を書かずに簡潔にする。
         val head = when {
@@ -336,7 +393,7 @@ object EffectTextRenderer {
         }
         if (effect.limits.isNotEmpty()) {
             lines += "【制限】" + effect.limits.joinToString("、") {
-                limitToText(it, master, cardWide = true)
+                limitToText(it, master, cardWide = true) { i -> numberLabel(effect, i) }
             }
         }
         // 【発動後】は、省略時の既定と違うときだけ明記する。
@@ -345,10 +402,17 @@ object EffectTextRenderer {
             ?.takeIf { it != EffectText.defaultAfterActivation(card.kind) }
             ?.let { lines += "【発動後】" + it.label }
 
+        // 番号を振らない効果（発動しただけで掛かる制限）を先に、その後に番号付きの効果。
+        val ordered = effect.clauses.indices
+            .filter { effect.clauses[it].hasWork }
+            .sortedBy { if (isUnnumbered(effect, it)) 0 else 1 }
+
         // 各効果。
-        effect.clauses.forEachIndexed { index, clause ->
-            if (!clause.hasWork) return@forEachIndexed
-            val sb = StringBuilder(circledNumber(index) + "：")
+        ordered.forEach { index ->
+            val clause = effect.clauses[index]
+            val sb = StringBuilder(
+                if (isUnnumbered(effect, index)) "" else numberLabel(effect, index) + "："
+            )
 
             // 効果そのものの前に置く【…】の欄。区切りを入れて、効果本体と分ける。
             val prefixes = mutableListOf<String>()
@@ -371,7 +435,10 @@ object EffectTextRenderer {
             }
 
             if (effect.isOnActivation(index)) {
-                sb.append("このカードの発動時に、")
+                // 召喚制限だけの効果は、それ自体が「発動するターン」の文になっている。
+                val onlyRestrictions = clause.actions.isNotEmpty() &&
+                    clause.actions.all { it is RestrictSummonAction }
+                if (!onlyRestrictions) sb.append("このカードの発動時に、")
                 sb.append(
                     clause.actions.joinToString("。その後、") { actionToText(it, master) }
                 )
@@ -400,12 +467,39 @@ object EffectTextRenderer {
             if (clause.actions.isNotEmpty()) sb.append("。")
             appendBranches(sb, clause, master)
             effect.clauseLimitsFor(index).forEach { limit ->
-                sb.append(limitToText(limit, master, cardWide = false) + "。")
+                val text = limitToText(limit, master, cardWide = false) { i ->
+                    numberLabel(effect, i)
+                }
+                sb.append(text + "。")
             }
             lines += sb.toString()
         }
 
         return lines.joinToString("\n")
+    }
+
+    /**
+     * 番号を振らない効果かどうか。
+     * 「このカードを発動するターン、〜できない」のような、発動しただけで掛かる制限は
+     * 効果番号より前に書くものなので、番号を付けない。
+     */
+    private fun isUnnumbered(effect: EffectText, index: Int): Boolean {
+        val clause = effect.clauses.getOrNull(index) ?: return false
+        return effect.isOnActivation(index) &&
+            clause.branches.isEmpty() &&
+            clause.actions.isNotEmpty() &&
+            clause.actions.all { it is RestrictSummonAction }
+    }
+
+    /** [index] 番目の効果に振る番号。番号を振らない効果は飛ばして数える。 */
+    private fun numberLabel(effect: EffectText, index: Int): String {
+        var position = 0
+        for (i in effect.clauses.indices) {
+            if (!effect.clauses[i].hasWork || isUnnumbered(effect, i)) continue
+            if (i == index) return circledNumber(position)
+            position++
+        }
+        return circledNumber(index)
     }
 
     /** 永続の効果が有効になる場所。省略時はフィールド。 */

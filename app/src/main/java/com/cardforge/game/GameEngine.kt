@@ -1,6 +1,7 @@
 package com.cardforge.game
 
 import com.cardforge.model.*
+import com.cardforge.text.EffectTextRenderer
 import kotlin.math.min
 
 data class CardLocation(val player: PlayerState, val zone: ZoneType, val index: Int)
@@ -134,6 +135,7 @@ class GameEngine(
         inst.setOnTurn = -1
         inst.turnProtections.clear()
         inst.attackLockedThisTurn = false
+        inst.revealedUntilTurn = -1
     }
 
     fun applyPosition(inst: CardInstance, position: Position) {
@@ -377,12 +379,16 @@ class GameEngine(
         val pool = candidates(scope, controller, source)
         if (scope.selfOnly) return pool
         if (pool.isEmpty()) return emptyList()
+        val want = effectiveCount(scope, controller, source)
         return when (scope.selection) {
             SelectionMode.ALL -> pool
-            SelectionMode.RANDOM -> pool.shuffled().take(scope.count)
+            SelectionMode.RANDOM -> pool.shuffled().take(want)
             SelectionMode.CHOOSE -> {
-                val n = min(scope.count, pool.size)
-                interaction.chooseCards(controller.index, prompt, pool, n, n)
+                val n = min(want, pool.size)
+                if (n <= 0) return emptyList()
+                // 「〜まで」なら選ばない選択も許す。
+                val least = if (scope.upTo) 0 else n
+                interaction.chooseCards(controller.index, prompt, pool, least, n)
             }
         }
     }
@@ -516,15 +522,35 @@ class GameEngine(
 
             is MoveCost ->
                 candidates(cost.scope, controller, excluding)
-                    .count { it !== excluding } >= requiredCount(cost.scope)
+                    .count { it !== excluding } >= requiredCount(cost.scope, controller, excluding)
+
+            // 見せるだけなので、いつでも払える。
+            is RevealCost -> true
         }
     }
 
     /** その対象指定で必要な枚数。「全て」なら最低1枚。 */
-    private fun requiredCount(scope: CardScope): Int =
-        if (scope.selfOnly) 1
-        else if (scope.selection == SelectionMode.ALL) 1
-        else scope.count
+    /** その指定が実際に何枚を指すか。「〜の数だけ」はここで数える。 */
+    fun effectiveCount(
+        scope: CardScope,
+        controller: PlayerState,
+        source: CardInstance? = null
+    ): Int = resolveValue(scope.countValue, controller, source).coerceAtLeast(0)
+
+    /**
+     * 発動できるかを見るときに、最低これだけ対象が要るという枚数。
+     * 「〜まで」を付けた指定は足りなくてもよいので 0。
+     */
+    private fun requiredCount(
+        scope: CardScope,
+        controller: PlayerState,
+        source: CardInstance? = null
+    ): Int = when {
+        scope.selfOnly -> 1
+        scope.upTo -> 0
+        scope.selection == SelectionMode.ALL -> 1
+        else -> effectiveCount(scope, controller, source)
+    }
 
     private suspend fun payCosts(
         costs: List<Cost>,
@@ -589,25 +615,29 @@ class GameEngine(
                 }
 
                 is MoveCost -> {
-                    val pool = candidates(cost.scope, controller, excluding)
-                        .filter { it !== excluding }
-                    if (pool.isEmpty()) return false
-                    val needed = requiredCount(cost.scope)
-                    val chosen = when {
-                        cost.scope.selection == SelectionMode.ALL -> pool
-                        cost.scope.selection == SelectionMode.RANDOM -> pool.shuffled().take(needed)
-                        else -> interaction.chooseCards(
-                            controller.index,
-                            "コスト：${cost.destination.label}カードを${needed}枚選択",
-                            pool, needed, needed
+                    val needed = effectiveCount(cost.scope, controller, excluding)
+                    if (needed > 0) {
+                        val pool = candidates(cost.scope, controller, excluding)
+                            .filter { it !== excluding }
+                        if (pool.isEmpty()) return false
+                        val chosen = when {
+                            cost.scope.selection == SelectionMode.ALL -> pool
+                            cost.scope.selection == SelectionMode.RANDOM ->
+                                pool.shuffled().take(needed)
+
+                            else -> interaction.chooseCards(
+                                controller.index,
+                                "コスト：${cost.destination.label}カードを${needed}枚選択",
+                                pool, needed, needed
+                            )
+                        }
+                        if (chosen.size < needed) return false
+                        chosen.forEach { moveForCost(it, cost.destination) }
+                        log(
+                            "${controller.name}はコストとして" +
+                                "${chosen.size}枚を${cost.destination.label}。"
                         )
                     }
-                    if (chosen.size < needed) return false
-                    chosen.forEach { moveForCost(it, cost.destination) }
-                    log(
-                        "${controller.name}はコストとして" +
-                            "${chosen.size}枚を${cost.destination.label}。"
-                    )
                 }
 
                 is DiscardSelfCost -> {
@@ -620,9 +650,37 @@ class GameEngine(
                         log("${controller.name}はコストとして「${self.card.name}」を墓地へ送った。")
                     }
                 }
+
+                is RevealCost -> reveal(cost.scope, cost.duration, controller, excluding)
             }
         }
         return true
+    }
+
+    /** カードを相手に見せる。指定した長さのあいだ公開したままにもできる。 */
+    private suspend fun reveal(
+        scope: CardScope,
+        duration: RevealDuration,
+        controller: PlayerState,
+        source: CardInstance?
+    ) {
+        val shown = candidates(scope, controller, source, respectProtection = false)
+        if (shown.isEmpty()) {
+            log("${controller.name}は見せるカードを持っていない。")
+            return
+        }
+        val names = shown.joinToString("、") { "「${it.card.name}」" }
+        log("${controller.name}は${names}を相手に見せた。")
+        when (duration) {
+            RevealDuration.MOMENT -> Unit
+            RevealDuration.TURN -> shown.forEach { it.revealedUntilTurn = state.turn }
+            RevealDuration.PERMANENT ->
+                shown.forEach { it.revealedUntilTurn = CardInstance.PERMANENT_REVEAL }
+        }
+        interaction.notify(
+            state.opponentOf(controller).index,
+            "${controller.name}が公開：$names"
+        )
     }
 
     private fun moveForCost(inst: CardInstance, destination: MoveDestination) {
@@ -749,6 +807,10 @@ class GameEngine(
                 val targets = resolveTargets(action.scope, controller, "特殊召喚するモンスターを選択", source)
                     .filter { it.card.kind == CardKind.MONSTER }
                 for (target in targets) {
+                    if (!summonAllowed(target, destination, SummonKind.SPECIAL)) {
+                        log("召喚の制限により「${target.card.name}」は特殊召喚できない。")
+                        continue
+                    }
                     val zone = destination.freeMonsterZones().firstOrNull()
                     if (zone == null) {
                         log("モンスターゾーンに空きが無いため特殊召喚できない。")
@@ -799,7 +861,10 @@ class GameEngine(
                 }
             }
 
-            is DrawAction -> playersFor(action.who, controller).forEach { draw(it, action.count) }
+            is DrawAction -> {
+                val count = resolveValue(action.countSpec, controller, source).coerceAtLeast(0)
+                playersFor(action.who, controller).forEach { draw(it, count) }
+            }
 
             is DamageAction -> {
                 val amount = resolveValue(action.amountSpec, controller, source)
@@ -879,6 +944,16 @@ class GameEngine(
                     log("「${it.card.name}」はこのターン攻撃できない。")
                 }
             }
+
+            is RestrictSummonAction -> {
+                val restriction = SummonRestriction(action.summon, action.filters, action.except)
+                playersFor(action.who, controller).forEach { player ->
+                    player.summonRestrictions.add(restriction)
+                    log("${player.name}はこのターン、${restrictionText(restriction)}。")
+                }
+            }
+
+            is RevealAction -> reveal(action.scope, action.duration, controller, source)
 
             NegateAction -> {
                 // 実際の無効化は発動宣言時の応答処理で行うため、ここでは何もしない。
@@ -993,6 +1068,7 @@ class GameEngine(
         is ActivateCardAction -> action.scope
         is GrantProtectionAction -> action.scope
         is PreventAttackAction -> action.scope
+        // 見せる対象や召喚制限は、対象が無くても発動できてよいので数えない。
         else -> null
     }
 
@@ -1090,7 +1166,7 @@ class GameEngine(
             val pool = candidates(scope, controller, source).filter { card ->
                 consumed.none { it === card }
             }
-            val needed = requiredCount(scope)
+            val needed = requiredCount(scope, controller, source)
             if (pool.size < needed) return false
             if (movesCards(action)) consumed += pool.take(needed)
         }
@@ -1414,14 +1490,7 @@ class GameEngine(
 
         // 発動時の効果処理。
         val zoneBefore = locate(inst)?.zone
-        for (index in effect.onActivationClauses()) {
-            if (state.finished) break
-            val clause = effect.clauses[index]
-            if (!conditionsMet(effect.conditionsFor(index), controller, inst)) continue
-            if (!canPayCosts(effect.costsFor(index), controller, excluding = inst)) continue
-            if (!payCosts(clause.costs, controller, excluding = inst)) continue
-            runClause(clause, controller, inst)
-        }
+        runOnActivationClauses(effect, controller, inst)
 
         // 効果自身がカードを動かしていたら、そのままにしておく。
         if (locate(inst)?.zone == zoneBefore) {
@@ -1430,12 +1499,30 @@ class GameEngine(
         return true
     }
 
+    /** 【発動タイプ】が「発動時」の効果をまとめて処理する。 */
+    private suspend fun runOnActivationClauses(
+        effect: EffectText,
+        controller: PlayerState,
+        inst: CardInstance
+    ) {
+        for (index in effect.onActivationClauses()) {
+            if (state.finished) break
+            val clause = effect.clauses[index]
+            if (!conditionsMet(effect.conditionsFor(index), controller, inst)) continue
+            if (!canPayCosts(effect.costsFor(index), controller, excluding = inst)) continue
+            if (!payCosts(clause.costs, controller, excluding = inst)) continue
+            runClause(clause, controller, inst)
+        }
+    }
+
     /**
      * カードを発動する。効果が複数ある場合はどの番号を使うか選ばせる。
      */
     suspend fun activateCard(inst: CardInstance, controller: PlayerState): Boolean {
         val clauses = activatableClauses(inst, controller)
-        val cardActivation = canActivateCardItself(inst, controller)
+        // 番号の効果を発動できるなら、それがそのまま「カードの発動」になるので、
+        // 「このカードを発動する」を別に並べない。
+        val cardActivation = canActivateCardItself(inst, controller) && clauses.isEmpty()
 
         if (clauses.isEmpty() && !cardActivation) {
             val reason = whyCannotActivate(inst, controller) ?: "今は発動できない。"
@@ -1491,6 +1578,10 @@ class GameEngine(
             controller.hand.remove(inst)
             controller.spellTrapZones[zone] = inst
         }
+        // 魔法・罠は、番号の効果を発動することがそのまま「カードの発動」になる。
+        // まだ表になっていなければ、これがそのカードの発動。
+        val isCardActivation = isSpellOrTrap && (placeOnField || inst.faceDown ||
+            locate(inst)?.zone == ZoneType.HAND)
         if (isOnField(inst)) inst.faceDown = false
 
         log("${controller.name}は「${inst.card.name}」の${EffectNumbers.circled(clauseIndex)}を発動。")
@@ -1520,6 +1611,8 @@ class GameEngine(
         }
 
         val zoneBefore = locate(inst)?.zone
+        // 「このカードの発動時に」処理する効果は、番号の効果より先に処理する。
+        if (isCardActivation) runOnActivationClauses(effect, controller, inst)
         runClause(clause, controller, inst)
 
         // 【発動後】の処理。省略時は魔法・罠なら墓地へ、モンスターならそのまま。
@@ -1715,9 +1808,33 @@ class GameEngine(
     // 召喚とセット
     // =======================================================================
 
+    /** ログや通知に出す、召喚制限の一文。 */
+    private fun restrictionText(restriction: SummonRestriction): String {
+        val noun = if (restriction.filters.isEmpty()) "モンスター"
+        else EffectTextRenderer.filtersToNoun(
+            restriction.filters, state.master, ZoneType.MONSTER_ZONE
+        )
+        val head = if (restriction.except) "${noun}以外のモンスター" else noun
+        return "${head}を${restriction.summon.label}できない"
+    }
+
+    /** [inst] を [kind] の方法で出せるか。掛かっている召喚制限を見る。 */
+    fun summonAllowed(
+        inst: CardInstance,
+        controller: PlayerState,
+        kind: SummonKind
+    ): Boolean = controller.summonRestrictions.none { restriction ->
+        val applies = restriction.summon == SummonKind.ANY || restriction.summon == kind
+        if (!applies) return@none false
+        val matches = matchesAll(inst, restriction.filters)
+        // 「〜以外を出せない」なら、当てはまらないカードが禁止される。
+        if (restriction.except) !matches else matches
+    }
+
     fun canNormalSummon(inst: CardInstance, controller: PlayerState): Boolean {
         if (inst.card.kind != CardKind.MONSTER) return false
         if (state.turnPlayer !== controller) return false
+        if (!summonAllowed(inst, controller, SummonKind.NORMAL)) return false
         if (state.phase != Phase.MAIN1 && state.phase != Phase.MAIN2) return false
         if (controller.normalSummonUsed) return false
         if (locate(inst)?.zone != ZoneType.HAND) return false
@@ -2001,6 +2118,7 @@ class GameEngine(
         state.players.forEach { player ->
             player.normalSummonUsed = false
             player.activationsThisTurn.clear()
+            player.summonRestrictions.clear()
             (player.monsters + player.spellsAndTraps).forEach { it.resetForNewTurn() }
         }
 

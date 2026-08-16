@@ -201,6 +201,35 @@ enum class GameEventType(val label: String, val isPlayerEvent: Boolean = false) 
     }
 }
 
+/** 召喚の種類。召喚制限の対象を書き分けるために使う。 */
+@Serializable
+enum class SummonKind(val label: String) {
+    SPECIAL("特殊召喚"),
+    NORMAL("通常召喚"),
+    ANY("召喚・特殊召喚");
+
+    companion object {
+        val all: List<SummonKind> get() = entries
+    }
+}
+
+/** カードを公開しておく長さ。 */
+@Serializable
+enum class RevealDuration(val label: String) {
+    /** 効果の処理中だけ見せる。 */
+    MOMENT("見せる（その場だけ）"),
+
+    /** そのターンの間、表にしたままにする。 */
+    TURN("このターンの間、公開し続ける"),
+
+    /** その領域にある限り、表にしたままにする。 */
+    PERMANENT("ずっと公開し続ける");
+
+    companion object {
+        val all: List<RevealDuration> get() = entries
+    }
+}
+
 /**
  * 出来事の原因。エンジンが出来事を知らせるときに添える。
  *
