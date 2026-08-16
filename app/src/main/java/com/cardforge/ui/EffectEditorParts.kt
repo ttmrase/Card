@@ -280,13 +280,32 @@ fun CardScopeEditor(
             Text("この効果を持つカード自身を除く")
         }
 
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Dropdown(
-                "誰の", PlayerRef.all, scope.who, { it.label }, Modifier.weight(1f)
-            ) { onChange(scope.copy(who = it)) }
-            Dropdown(
-                "どこの", ZoneType.all, scope.zone, { it.label }, Modifier.weight(1f)
-            ) { onChange(scope.copy(zone = it)) }
+        Dropdown(
+            "誰の", PlayerRef.all, scope.who, { it.label }
+        ) { onChange(scope.copy(who = it)) }
+
+        Text(
+            "どこの（複数選べます）",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        FlowRowSimple {
+            ZoneType.all.forEach { candidate ->
+                Chip(candidate.label, selected = candidate in scope.zoneList) {
+                    val current = scope.zoneList
+                    val updated =
+                        if (candidate in current) (current - candidate).ifEmpty { listOf(candidate) }
+                        else current + candidate
+                    onChange(scope.copy(zone = updated.first(), zones = updated))
+                }
+            }
+        }
+        if (scope.zoneList.size > 1) {
+            Text(
+                "「" + scope.zoneList.joinToString("または") { it.label } + "」から選びます。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
 
         if (showCount) {

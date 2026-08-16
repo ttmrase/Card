@@ -25,11 +25,13 @@ object EffectTextRenderer {
     // 対象指定（主語・目的語・修飾語）
     // -----------------------------------------------------------------------
 
-    private fun zonePrefix(who: PlayerRef, zone: ZoneType): String {
-        val needsParticle =
+    private fun zonePrefix(who: PlayerRef, zones: List<ZoneType>): String {
+        val zone = zones.first()
+        val label = zones.joinToString("または") { it.label }
+        val needsParticle = zones.size > 1 ||
             zone.isHidden || zone == ZoneType.GRAVEYARD || zone == ZoneType.BANISHED ||
-                who == PlayerRef.BOTH
-        return if (needsParticle) "${who.label}の${zone.label}の" else "${who.label}${zone.label}の"
+            who == PlayerRef.BOTH
+        return if (needsParticle) "${who.label}の${label}の" else "${who.label}${label}の"
     }
 
     /** 「体」か「枚」か。モンスターを指しているなら「体」。 */
@@ -38,7 +40,7 @@ object EffectTextRenderer {
         return when {
             kind == CardKind.MONSTER -> "体"
             kind != null -> "枚"
-            scope.zone == ZoneType.MONSTER_ZONE -> "体"
+            scope.zoneList.all { it == ZoneType.MONSTER_ZONE } -> "体"
             else -> "枚"
         }
     }
@@ -104,8 +106,8 @@ object EffectTextRenderer {
     /** 「相手フィールドの闇属性モンスター1体」のような、数まで含めた対象表現。 */
     fun scopeToText(scope: CardScope, master: MasterData, withCount: Boolean = true): String {
         if (scope.selfOnly) return "このカード"
-        val prefix = zonePrefix(scope.who, scope.zone)
-        val noun = filtersToNoun(scope.filters, master, scope.zone)
+        val prefix = zonePrefix(scope.who, scope.zoneList)
+        val noun = filtersToNoun(scope.filters, master, scope.mainZone)
         if (scope.selection == SelectionMode.ALL) return "${prefix}全ての$noun"
         if (!withCount) return "$prefix$noun"
 

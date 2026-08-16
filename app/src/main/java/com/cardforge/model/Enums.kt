@@ -202,6 +202,7 @@ enum class GameEventType(val label: String, val isPlayerEvent: Boolean = false) 
     ATTACK_DECLARED("攻撃宣言した"),
     LEFT_FIELD("フィールドを離れた"),
     TARGETED("効果の対象になった"),
+    ATTACK_TARGETED("攻撃対象になった"),
     DAMAGE_TAKEN("ダメージを受けた", isPlayerEvent = true),
     LIFE_RECOVERED("ライフを回復した", isPlayerEvent = true),
     CARD_DRAWN("カードをドローした", isPlayerEvent = true);

@@ -80,6 +80,7 @@ data class SummonedByThisFilter(val enabled: Boolean = true) : CardFilter
 @Serializable
 data class CardScope(
     val who: PlayerRef = PlayerRef.OPPONENT,
+    /** 対象にする領域。[zones] を指定した場合はそちらが優先される。 */
     val zone: ZoneType = ZoneType.MONSTER_ZONE,
     val filters: List<CardFilter> = emptyList(),
     val count: Int = 1,
@@ -97,8 +98,19 @@ data class CardScope(
      */
     val upTo: Boolean = false,
     /** 「このカードを除く」。この効果を持つカード自身を対象から外す。 */
-    val excludeSelf: Boolean = false
+    val excludeSelf: Boolean = false,
+    /**
+     * 「デッキまたは墓地」のように、複数の領域をまとめて対象にするときの指定。
+     * 空なら [zone] の1つだけを見る。
+     */
+    val zones: List<ZoneType> = emptyList()
 ) {
+    /** 実際に見る領域の一覧。 */
+    val zoneList: List<ZoneType> get() = zones.ifEmpty { listOf(zone) }
+
+    /** 表示や既定値に使う代表の領域。 */
+    val mainZone: ZoneType get() = zoneList.first()
+
     /** 枚数の指定。[countSpec] があればそちらが優先される。 */
     val countValue: ValueSpec get() = countSpec ?: FixedValue(count)
 }

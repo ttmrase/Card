@@ -352,6 +352,133 @@ class ConditionsAndPhaseTest {
         assertEquals("メインフェイズ1の次へ進む", Phase.BATTLE, state.phase)
     }
 
+    // -- 攻撃対象になった --------------------------------------------------
+
+    @Test
+    fun `being attacked is an event the defender can react to`() = runBlocking {
+        val (state, engine) = game(turnPlayer = 1)
+        val me = state.players[0]
+        val opponent = state.players[1]
+        state.phase = Phase.BATTLE
+
+        val defender = CardInstance(
+            newId(),
+            CardDef(
+                id = newId(), name = "反撃する者", kind = CardKind.MONSTER,
+                level = 4, atk = 1000, def = 2000,
+                effect = EffectText(
+                    locations = listOf(ActivationLocation.FIELD),
+                    clauses = listOf(
+                        EffectClause(
+                            conditions = listOf(
+                                EventCondition(
+                                    event = GameEventType.ATTACK_TARGETED,
+                                    selfOnly = true
+                                )
+                            ),
+                            mode = ActivationMode.MANDATORY,
+                            actions = listOf(RecoverAction(PlayerRef.SELF, 700))
+                        )
+                    )
+                )
+            )
+        )
+        defender.position = Position.DEFENSE
+        me.monsterZones[0] = defender
+
+        val attacker = monster("殴る者", atk = 1500)
+        opponent.monsterZones[0] = attacker
+        attacker.summonedOnTurn = state.turn - 1
+
+        engine.declareAttack(attacker, defender)
+        assertEquals("攻撃対象になったので誘発する", 8700, me.life)
+    }
+
+    @Test
+    fun `the attacker can be named in the condition`() {
+        val condition = EventCondition(
+            event = GameEventType.ATTACK_TARGETED,
+            selfOnly = true,
+            sourceFilters = listOf(KindFilter(CardKind.MONSTER))
+        )
+        assertEquals(
+            "このカードがモンスターによって攻撃対象になった場合",
+            EffectTextRenderer.eventConditionToText(condition, master)
+        )
+    }
+
+    // -- 複数の領域 --------------------------------------------------------
+
+    @Test
+    fun `a scope can span several zones`() {
+        val (state, engine) = game()
+        val me = state.players[0]
+
+        val inDeck = monster("デッキの子")
+        val inGrave = monster("墓地の子")
+        val inHand = monster("手札の子")
+        me.deck.add(inDeck)
+        me.graveyard.add(inGrave)
+        me.hand.add(inHand)
+
+        val scope = CardScope(
+            who = PlayerRef.SELF,
+            zones = listOf(ZoneType.DECK, ZoneType.GRAVEYARD),
+            filters = listOf(KindFilter(CardKind.MONSTER)),
+            selection = SelectionMode.ALL
+        )
+        val found = engine.candidates(scope, me)
+
+        assertEquals(2, found.size)
+        assertTrue(found.any { it === inDeck })
+        assertTrue(found.any { it === inGrave })
+        assertFalse("手札は含まれない", found.any { it === inHand })
+    }
+
+    @Test
+    fun `several zones read with matawa`() {
+        val scope = CardScope(
+            who = PlayerRef.SELF,
+            zones = listOf(ZoneType.DECK, ZoneType.GRAVEYARD),
+            filters = listOf(KindFilter(CardKind.MONSTER)),
+            count = 1
+        )
+        assertEquals(
+            "自分のデッキまたは墓地のモンスター1体",
+            EffectTextRenderer.scopeToText(scope, master)
+        )
+    }
+
+    @Test
+    fun `an effect can search across zones`() = runBlocking {
+        val (state, engine) = game()
+        val me = state.players[0]
+
+        val target = monster("墓地の子")
+        me.graveyard.add(target)
+
+        val card = spellWith(
+            "デッキまたは墓地から",
+            EffectClause(
+                actions = listOf(
+                    ToHandAction(
+                        CardScope(
+                            who = PlayerRef.SELF,
+                            zones = listOf(ZoneType.DECK, ZoneType.GRAVEYARD),
+                            filters = listOf(KindFilter(CardKind.MONSTER)),
+                            count = 1
+                        )
+                    )
+                )
+            )
+        )
+        me.hand.add(card)
+        assertTrue(engine.activatableCards(me).any { it === card })
+        engine.activateCard(card, me)
+
+        assertTrue("墓地からでも手札に加わる", me.hand.any { it === target })
+    }
+
     @Test
     fun `the phase action is written plainly`() {
         val text = EffectTextRenderer.actionToText(

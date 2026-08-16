@@ -543,7 +543,7 @@ class GameEngine(
 
         val hidesInfo = needsCardInfo(scope.filters)
         return playersFor(scope.who, controller)
-            .flatMap { zoneCards(it, scope.zone) }
+            .flatMap { player -> scope.zoneList.flatMap { zoneCards(player, it) } }
             .filter { !(hidesInfo && it.faceDown) }
             // 「このカードを除く」。
             .filter { !(scope.excludeSelf && it === source) }
@@ -592,7 +592,7 @@ class GameEngine(
 
     /** デッキから選んだ後はデッキをシャッフルする。 */
     private fun shuffleIfDeck(scope: CardScope, controller: PlayerState) {
-        if (scope.zone != ZoneType.DECK) return
+        if (ZoneType.DECK !in scope.zoneList) return
         playersFor(scope.who, controller).forEach { player ->
             val shuffled = player.deck.toList().shuffled()
             player.deck.clear()
@@ -2444,7 +2444,7 @@ class GameEngine(
                 else raw.copy(
                     cause = causeKind,
                     causePlayer = causePlayer,
-                    sourceCard = causeSource
+                    sourceCard = raw.sourceCard ?: causeSource
                 )
             state.eventsThisTurn += event
             triggerDepth++
@@ -2708,6 +2708,17 @@ class GameEngine(
         log("${attackingPlayer.name}の「${attacker.card.name}」が攻撃宣言。")
 
         emit(GameEvent(GameEventType.ATTACK_DECLARED, attackingPlayer.index, attacker))
+        if (target != null) {
+            // 攻撃された側のカードにも知らせる。誰に攻撃されたかも一緒に渡す。
+            emit(
+                GameEvent(
+                    GameEventType.ATTACK_TARGETED,
+                    defendingPlayer.index,
+                    target,
+                    sourceCard = attacker
+                )
+            )
+        }
         if (state.finished) return
 
         if (offerResponse(attackingPlayer, "「${attacker.card.name}」の攻撃")) {
