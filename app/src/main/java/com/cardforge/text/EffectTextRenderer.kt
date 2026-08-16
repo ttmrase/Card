@@ -162,7 +162,37 @@ object EffectTextRenderer {
         return "$what$tail"
     }
 
+    /** 「〜は次の効果を得る」という文。 */
+    fun grantEffectToText(action: GrantEffectAction, master: MasterData): String {
+        val who = scopeToText(action.scope, master, withCount = false)
+        val body = grantedClauseToText(action.granted, master)
+        return "${who}は次の効果を得る「$body」"
+    }
+
+    /** 与えられる効果の中身。番号を付けずに1文で書く。 */
+    fun grantedClauseToText(clause: EffectClause, master: MasterData): String {
+        if (!clause.hasWork) return "（効果が未設定）"
+        val sb = StringBuilder()
+        if (clause.conditions.isNotEmpty()) {
+            sb.append(
+                orderedConditions(clause.conditions).joinToString("、かつ") {
+                    conditionToText(it, master)
+                }
+            ).append("、")
+        }
+        val body = if (clause.mode.isContinuous) {
+            joinSteps(clause) { continuousActionToText(it, master) }
+        } else {
+            joinSteps(clause) { actionToText(it, master) }
+        }
+        sb.append(body).append("。")
+        appendBranches(sb, clause, master)
+        return sb.toString()
+    }
+
     fun actionToText(action: Action, master: MasterData): String = when (action) {
+        is GrantEffectAction -> grantEffectToText(action, master)
+
         is RestrictSummonAction -> restrictSummonToText(action, master)
 
         is RevealAction -> revealToText(action.scope, action.duration, master)
@@ -213,11 +243,14 @@ object EffectTextRenderer {
         is RecoverAction ->
             "${action.who.label}のライフを${valueToText(action.amountSpec, master)}ポイント回復する"
 
-        is DiscardAction ->
-            "${action.who.label}は手札を${if (action.random) "ランダムに" else ""}${action.count}枚捨てる"
+        is DiscardAction -> {
+            val how = if (action.random) "ランダムに" else ""
+            "${action.who.label}は手札を$how${countSpecToText(action.countSpec, master)}枚捨てる"
+        }
 
         is MillAction ->
-            "${action.who.label}のデッキの上からカードを${action.count}枚墓地へ送る"
+            "${action.who.label}のデッキの上からカードを" +
+                "${countSpecToText(action.countSpec, master)}枚墓地へ送る"
 
         is SetSpellTrapAction ->
             scopeToText(action.scope, master) + selectionParticle(action.scope) +
@@ -452,24 +485,16 @@ object EffectTextRenderer {
                 val where = effectiveLocationLabel(effect, index)
                 sb.append("このカードが${where}に存在する限り、")
                 sb.append(
-                    clause.actions.joinToString("。また、") {
-                        continuousActionToText(it, master)
-                    }
+                    stepText(
+                        clause.actions, emptyList(), clause.linkedSteps,
+                        ActivationMode.MANDATORY, false
+                    ) { continuousActionToText(it, master) }.replace("。その後、", "。また、")
                 )
             } else if (clause.actions.isNotEmpty()) {
                 sb.append(
-                    clause.actions.mapIndexed { position, action ->
-                        val text = actionToText(action, master)
-                        when {
-                            // 「〜することができる」と書く処理。
-                            clause.isOptionalStep(position) -> optionalStepText(text)
-                            // 最後の文だけ「〜できる（任意）／〜する（強制）」を書き分ける。
-                            position == clause.actions.lastIndex && effect.isTriggered(index) ->
-                                applyMode(text, clause.mode)
-
-                            else -> text
-                        }
-                    }.joinToString("。その後、")
+                    joinSteps(clause, triggered = effect.isTriggered(index)) {
+                        actionToText(it, master)
+                    }
                 )
             }
             if (clause.actions.isNotEmpty()) sb.append("。")
@@ -558,12 +583,7 @@ object EffectTextRenderer {
                 sb.append("それ以外の場合")
             }
             sb.append("：")
-            sb.append(
-                branch.actions.mapIndexed { position, action ->
-                    val text = actionToText(action, master)
-                    if (branch.isOptionalStep(position)) optionalStepText(text) else text
-                }.joinToString("。その後、")
-            )
+            sb.append(joinSteps(branch) { actionToText(it, master) })
             sb.append("。")
         }
     }
@@ -572,6 +592,76 @@ object EffectTextRenderer {
     private fun orderedConditions(conditions: List<Condition>): List<Condition> =
         conditions.filterIsInstance<EventCondition>() +
             conditions.filterNot { it is EventCondition }
+
+    /**
+     * 処理のまとまりごとに文をつなぐ。
+     *
+     * まとめた処理は「〜し、」でつながり、まとまりが任意なら最後に
+     * 「〜することができる」が付く。まとまりどうしは「。その後、」でつなぐ。
+     */
+    private fun joinSteps(
+        clause: EffectClause,
+        triggered: Boolean = false,
+        text: (Action) -> String
+    ): String = stepText(
+        clause.actions, clause.optionalSteps, clause.linkedSteps, clause.mode, triggered, text
+    )
+
+    private fun joinSteps(
+        branch: EffectBranch,
+        text: (Action) -> String
+    ): String = stepText(
+        branch.actions, branch.optionalSteps, branch.linkedSteps,
+        ActivationMode.MANDATORY, false, text
+    )
+
+    private fun stepText(
+        actions: List<Action>,
+        optionalSteps: List<Int>,
+        linkedSteps: List<Int>,
+        mode: ActivationMode,
+        triggered: Boolean,
+        text: (Action) -> String
+    ): String {
+        val units = stepUnits(actions.size, optionalSteps, linkedSteps)
+        return units.mapIndexed { position, unit ->
+            val body = joinLinked(unit.indices.map { text(actions[it]) })
+            when {
+                unit.optional -> optionalStepText(body)
+                // 最後の文だけ「〜できる（任意）／〜する（強制）」を書き分ける。
+                position == units.lastIndex && triggered -> applyMode(body, mode)
+                else -> body
+            }
+        }.joinToString("。その後、")
+    }
+
+    /**
+     * まとめた処理をつなぐ。「破壊する」＋「除外する」→「破壊し、除外する」。
+     * 最後の1文はそのまま、それより前は連用形にする。
+     */
+    fun joinLinked(texts: List<String>): String =
+        texts.mapIndexed { index, text ->
+            if (index == texts.lastIndex) text else linkedForm(text) + "、"
+        }.joinToString("")
+
+    /** 「〜し、」とつなげるための連用形。 */
+    private fun linkedForm(text: String): String = when {
+        text.endsWith("する") -> text.dropLast(2) + "し"
+        ICHIDAN_TAILS.any { text.endsWith(it) } -> text.dropLast(1)
+        text.endsWith("る") -> text.dropLast(1) + "り"
+        text.endsWith("す") -> text.dropLast(1) + "し"
+        text.endsWith("く") -> text.dropLast(1) + "き"
+        text.endsWith("ぐ") -> text.dropLast(1) + "ぎ"
+        text.endsWith("む") -> text.dropLast(1) + "み"
+        text.endsWith("ぶ") -> text.dropLast(1) + "び"
+        text.endsWith("つ") -> text.dropLast(1) + "ち"
+        text.endsWith("う") -> text.dropLast(1) + "い"
+        else -> text
+    }
+
+    /** 「る」を落とすだけでよい一段動詞の語尾。 */
+    private val ICHIDAN_TAILS =
+        listOf("える", "ける", "せる", "てる", "める", "れる", "ねる", "べる", "げる", "でる")
 
     /** 「〜することができる」と書く、任意の処理の文。 */
     fun optionalStepText(text: String): String = text + "ことができる"

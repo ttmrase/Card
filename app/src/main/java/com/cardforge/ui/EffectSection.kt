@@ -457,6 +457,7 @@ private fun ClauseEditor(
         ActionList(
             actions = clause.actions,
             optionalSteps = clause.optionalSteps,
+            linkedSteps = clause.linkedSteps,
             master = master,
             label = "【効果】",
             onAdd = { onActionSlot(slot(null, null)) },
@@ -465,12 +466,16 @@ private fun ClauseEditor(
                 onChange(
                     clause.copy(
                         actions = clause.actions.removedAt(it),
-                        optionalSteps = clause.optionalSteps.shiftedAfterRemoval(it)
+                        optionalSteps = clause.optionalSteps.shiftedAfterRemoval(it),
+                        linkedSteps = clause.linkedSteps.shiftedAfterRemoval(it)
                     )
                 )
             },
             onToggleOptional = {
                 onChange(clause.copy(optionalSteps = clause.optionalSteps.toggled(it)))
+            },
+            onToggleLinked = {
+                onChange(clause.copy(linkedSteps = clause.linkedSteps.toggled(it)))
             }
         )
 
@@ -546,6 +551,7 @@ private fun ClauseEditor(
                     ActionList(
                         actions = branch.actions,
                         optionalSteps = branch.optionalSteps,
+                        linkedSteps = branch.linkedSteps,
                         master = master,
                         label = "この場合の【効果】",
                         onAdd = { onActionSlot(slot(branchIndex, null)) },
@@ -557,7 +563,9 @@ private fun ClauseEditor(
                                         it.copy(
                                             actions = it.actions.removedAt(actionIndex),
                                             optionalSteps =
-                                                it.optionalSteps.shiftedAfterRemoval(actionIndex)
+                                                it.optionalSteps.shiftedAfterRemoval(actionIndex),
+                                            linkedSteps =
+                                                it.linkedSteps.shiftedAfterRemoval(actionIndex)
                                         )
                                     }
                                 )
@@ -568,6 +576,15 @@ private fun ClauseEditor(
                                 clause.copy(
                                     branches = clause.branches.replacedAt(branchIndex) {
                                         it.copy(optionalSteps = it.optionalSteps.toggled(actionIndex))
+                                    }
+                                )
+                            )
+                        },
+                        onToggleLinked = { actionIndex ->
+                            onChange(
+                                clause.copy(
+                                    branches = clause.branches.replacedAt(branchIndex) {
+                                        it.copy(linkedSteps = it.linkedSteps.toggled(actionIndex))
                                     }
                                 )
                             )
@@ -700,32 +717,68 @@ private fun SummonLockList(
 private fun ActionList(
     actions: List<Action>,
     optionalSteps: List<Int>,
+    linkedSteps: List<Int>,
     master: MasterData,
     label: String,
     onAdd: () -> Unit,
     onEdit: (Int) -> Unit,
     onRemove: (Int) -> Unit,
-    onToggleOptional: (Int) -> Unit
+    onToggleOptional: (Int) -> Unit,
+    onToggleLinked: (Int) -> Unit
 ) {
-    EditableList(
-        label = label,
-        lines = actions.mapIndexed { index, action ->
-            val text = EffectTextRenderer.actionToText(action, master)
-            if (index in optionalSteps) EffectTextRenderer.optionalStepText(text) + "。"
-            else text + "。"
-        },
-        addLabel = "＋ 効果の文を追加",
-        emptyHint = "まだ効果がありません。",
-        onAdd = onAdd,
-        onEdit = onEdit,
-        onRemove = onRemove,
-        rowTrailing = { index ->
-            Chip(
-                if (index in optionalSteps) "任意" else "強制",
-                selected = index in optionalSteps
-            ) { onToggleOptional(index) }
+    val units = stepUnits(actions.size, optionalSteps, linkedSteps)
+    val unitOf = HashMap<Int, StepUnit>()
+    units.forEach { unit -> unit.indices.forEach { unitOf[it] = unit } }
+
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        EditableList(
+            label = label,
+            lines = actions.mapIndexed { index, action ->
+                val text = EffectTextRenderer.actionToText(action, master)
+                val unit = unitOf[index]
+                val head = if (index > 0 && index in linkedSteps) "（前の処理と一体）" else ""
+                val tail = when {
+                    unit != null && unit.optional && index == unit.endInclusive ->
+                        EffectTextRenderer.optionalStepText("") + "。"
+
+                    else -> "。"
+                }
+                head + text + tail
+            },
+            addLabel = "＋ 効果の文を追加",
+            emptyHint = "まだ効果がありません。",
+            onAdd = onAdd,
+            onEdit = onEdit,
+            onRemove = onRemove,
+            rowTrailing = { index ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (index > 0) {
+                        Chip(
+                            if (index in linkedSteps) "一体" else "別",
+                            selected = index in linkedSteps
+                        ) { onToggleLinked(index) }
+                    }
+                    val unit = unitOf[index]
+                    if (unit == null || index == unit.start) {
+                        Chip(
+                            if (index in optionalSteps) "任意" else "強制",
+                            selected = index in optionalSteps
+                        ) { onToggleOptional(index) }
+                    }
+                }
+            }
+        )
+        if (actions.size > 1) {
+            Text(
+                "「一体」にした処理は前の処理とまとめて扱われ、" +
+                    "まとまりの先頭を「任意」にすると、まとめて行うかどうかを一度だけ選びます。" +
+                    "「手札を見せ、デッキから墓地へ送ることができる」のように、" +
+                    "片方だけを行えない処理を作れます。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
-    )
+    }
 }
 
 /** タップで編集、ゴミ箱で削除できる一覧。 */

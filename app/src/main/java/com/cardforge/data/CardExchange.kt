@@ -125,6 +125,15 @@ object IdRemapper {
         is PreventAttackAction -> action.copy(scope = remapScope(action.scope, m))
         is RevealAction -> action.copy(scope = remapScope(action.scope, m))
 
+        is GrantEffectAction -> action.copy(
+            scope = remapScope(action.scope, m),
+            granted = action.granted.copy(
+                conditions = action.granted.conditions.map { remapCondition(it, m) },
+                costs = action.granted.costs.map { remapCost(it, m) },
+                actions = action.granted.actions.map { remapAction(it, m) }
+            )
+        )
+
         is RestrictSummonAction ->
             action.copy(filters = action.filters.map { remapFilter(it, m) })
 
@@ -136,6 +145,8 @@ object IdRemapper {
         is DamageAction -> action.copy(amountValue = action.amountValue?.let { remapValue(it, m) })
         is RecoverAction -> action.copy(amountValue = action.amountValue?.let { remapValue(it, m) })
         is DrawAction -> action.copy(countValue = action.countValue?.let { remapValue(it, m) })
+        is MillAction -> action.copy(countValue = action.countValue?.let { remapValue(it, m) })
+        is DiscardAction -> action.copy(countValue = action.countValue?.let { remapValue(it, m) })
         else -> action
     }
 
@@ -233,6 +244,13 @@ object IdRemapper {
             is RevealAction -> collectScope(action.scope, ids)
             is RestrictSummonAction -> collectFilters(action.filters, ids)
 
+            is GrantEffectAction -> {
+                collectScope(action.scope, ids)
+                action.granted.conditions.forEach { collectCondition(it, ids) }
+                action.granted.costs.forEach { collectCost(it, ids) }
+                action.granted.actions.forEach { collectAction(it, ids) }
+            }
+
             is ModifyStatAction -> {
                 collectScope(action.scope, ids)
                 collectValue(action.deltaValue, ids)
@@ -241,6 +259,8 @@ object IdRemapper {
             is DamageAction -> collectValue(action.amountValue, ids)
             is RecoverAction -> collectValue(action.amountValue, ids)
             is DrawAction -> collectValue(action.countValue, ids)
+            is MillAction -> collectValue(action.countValue, ids)
+            is DiscardAction -> collectValue(action.countValue, ids)
             else -> Unit
         }
     }

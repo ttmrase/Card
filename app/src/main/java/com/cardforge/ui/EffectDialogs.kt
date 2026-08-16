@@ -36,6 +36,7 @@ private enum class ActionType(val label: String, val usesScope: Boolean) {
     ACTIVATE_CARD("そのカードを発動する", true),
     GRANT_PROTECTION("耐性を与える（永続向き）", true),
     PREVENT_ATTACK("攻撃できなくする（永続向き）", true),
+    GRANT_EFFECT("効果を与える（永続向き）", true),
     REVEAL("カードを相手に見せる（公開する）", true),
     NEGATE("発動を無効にし破壊する", false)
 }
@@ -59,6 +60,7 @@ private fun typeOf(action: Action): ActionType = when (action) {
     is ActivateCardAction -> ActionType.ACTIVATE_CARD
     is GrantProtectionAction -> ActionType.GRANT_PROTECTION
     is PreventAttackAction -> ActionType.PREVENT_ATTACK
+    is GrantEffectAction -> ActionType.GRANT_EFFECT
     // 旧データ用。編集画面では【制限】として扱う。
     is RestrictSummonAction -> ActionType.NEGATE
     is RevealAction -> ActionType.REVEAL
@@ -79,6 +81,7 @@ private fun scopeOf(action: Action): CardScope? = when (action) {
     is ActivateCardAction -> action.scope
     is GrantProtectionAction -> action.scope
     is PreventAttackAction -> action.scope
+    is GrantEffectAction -> action.scope
     is RevealAction -> action.scope
     else -> null
 }
@@ -168,6 +171,21 @@ fun ActionDialog(
             (initial as? RevealAction)?.duration ?: RevealDuration.MOMENT
         )
     }
+    var granted by remember {
+        mutableStateOf((initial as? GrantEffectAction)?.granted ?: EffectClause())
+    }
+    var showGrantedAction by remember { mutableStateOf<Int?>(null) }
+    var addingGrantedAction by remember { mutableStateOf(false) }
+    var countValue by remember {
+        mutableStateOf(
+            when (initial) {
+                is DrawAction -> initial.countSpec
+                is MillAction -> initial.countSpec
+                is DiscardAction -> initial.countSpec
+                else -> FixedValue(1)
+            }
+        )
+    }
 
     fun build(): Action = when (type) {
         ActionType.DESTROY -> DestroyAction(scope)
@@ -183,16 +201,17 @@ fun ActionDialog(
         )
         ActionType.MODIFY_STAT -> ModifyStatAction(scope, stat, deltaValue = statValue)
         ActionType.CHANGE_POSITION -> ChangePositionAction(scope, position)
-        ActionType.DRAW -> DrawAction(who, amount)
+        ActionType.DRAW -> DrawAction(who, countValue = countValue)
         ActionType.DAMAGE -> DamageAction(who, amountValue = amountValue)
         ActionType.RECOVER -> RecoverAction(who, amountValue = amountValue)
-        ActionType.DISCARD -> DiscardAction(who, amount, randomDiscard)
-        ActionType.MILL -> MillAction(who, amount)
+        ActionType.DISCARD -> DiscardAction(who, random = randomDiscard, countValue = countValue)
+        ActionType.MILL -> MillAction(who, countValue = countValue)
         ActionType.SET_SPELL_TRAP -> SetSpellTrapAction(scope)
         ActionType.PLACE_SPELL_TRAP -> PlaceSpellTrapAction(scope)
         ActionType.ACTIVATE_CARD -> ActivateCardAction(scope)
         ActionType.GRANT_PROTECTION -> GrantProtectionAction(scope, protection)
         ActionType.PREVENT_ATTACK -> PreventAttackAction(scope)
+        ActionType.GRANT_EFFECT -> GrantEffectAction(scope, granted)
         ActionType.REVEAL -> RevealAction(scope, revealDuration)
         ActionType.NEGATE -> NegateAction
     }
@@ -276,7 +295,7 @@ fun ActionDialog(
 
                     ActionType.DRAW, ActionType.MILL -> {
                         Dropdown("対象プレイヤー", PlayerRef.all, who, { it.label }) { who = it }
-                        NumberField("枚数", amount) { amount = it.coerceIn(1, 20) }
+                        ValueSpecEditor("枚数", countValue, master) { countValue = it }
                     }
 
                     ActionType.DAMAGE, ActionType.RECOVER -> {
@@ -286,7 +305,7 @@ fun ActionDialog(
 
                     ActionType.DISCARD -> {
                         Dropdown("対象プレイヤー", PlayerRef.all, who, { it.label }) { who = it }
-                        NumberField("枚数", amount) { amount = it.coerceIn(1, 20) }
+                        ValueSpecEditor("枚数", countValue, master) { countValue = it }
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Checkbox(
                                 checked = randomDiscard,
@@ -319,6 +338,59 @@ fun ActionDialog(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+
+                    ActionType.GRANT_EFFECT -> {
+                        HorizontalDivider()
+                        Text(
+                            "【発動タイプ】を「永続」にした効果に書いてください。" +
+                                "このカードが【場所】にある間、上で指定したカードが" +
+                                "下の効果を持つようになります。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Dropdown(
+                            "与える効果の発動タイプ",
+                            ActivationMode.all.filter { it != ActivationMode.ON_ACTIVATION },
+                            granted.mode,
+                            { it.label }
+                        ) { granted = granted.copy(mode = it) }
+
+                        Text(
+                            "与える効果の中身",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        granted.actions.forEachIndexed { position, given ->
+                            Surface(
+                                color = Surface2,
+                                shape = MaterialTheme.shapes.small,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    Modifier.padding(start = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        EffectTextRenderer.actionToText(given, master) + "。",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .padding(vertical = 10.dp)
+                                    )
+                                    TextButton(onClick = { showGrantedAction = position }) {
+                                        Text("編集")
+                                    }
+                                    TextButton(onClick = {
+                                        granted = granted.copy(
+                                            actions = granted.actions.toMutableList()
+                                                .also { it.removeAt(position) }
+                                        )
+                                    }) { Text("削除") }
+                                }
+                            }
+                        }
+                        Chip("＋ 与える効果の文を追加") { addingGrantedAction = true }
+                    }
 
                     ActionType.REVEAL -> {
                         HorizontalDivider()
@@ -359,6 +431,26 @@ fun ActionDialog(
         dismissButton = { TextButton(onClick = onDismiss) { Text("キャンセル") } }
     )
 
+    // 与える効果の中身は、同じダイアログをもう一段開いて組み立てる。
+    if (addingGrantedAction || showGrantedAction != null) {
+        val position = showGrantedAction
+        ActionDialog(
+            initial = position?.let { granted.actions.getOrNull(it) },
+            master = master,
+            onDismiss = {
+                addingGrantedAction = false
+                showGrantedAction = null
+            },
+            onConfirm = { given ->
+                granted = granted.copy(
+                    actions = if (position == null) granted.actions + given
+                    else granted.actions.toMutableList().also { it[position] = given }
+                )
+                addingGrantedAction = false
+                showGrantedAction = null
+            }
+        )
+    }
 }
 
 // ===========================================================================

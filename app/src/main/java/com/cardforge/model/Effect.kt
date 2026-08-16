@@ -173,6 +173,22 @@ data class RestrictSummonAction(
 ) : Action
 
 /**
+ * 「〜は次の効果を得る」という、効果そのものを与える述語。
+ *
+ * 【発動タイプ】を「永続」にした効果に書くと、このカードが【場所】にある間だけ
+ * [scope] に当てはまるカードが [granted] の効果を持つようになる。
+ *
+ * 与えられた効果はそのカード自身の効果として扱われる（発動も、永続の適用も同じ）。
+ * ただし「効果を与える効果」を与えることはできない。
+ */
+@Serializable
+@SerialName("grantEffect")
+data class GrantEffectAction(
+    val scope: CardScope,
+    val granted: EffectClause = EffectClause()
+) : Action
+
+/**
  * カードを相手に見せる。
  *
  * [RevealDuration.MOMENT] はその場で見せるだけ、それ以外は指定した長さのあいだ
@@ -224,13 +240,24 @@ data class RecoverAction(
 @SerialName("discard")
 data class DiscardAction(
     val who: PlayerRef,
-    val count: Int,
-    val random: Boolean = false
-) : Action
+    val count: Int = 1,
+    val random: Boolean = false,
+    /** 「〜の数だけ捨てさせる」と書きたいときの枚数指定。 */
+    val countValue: ValueSpec? = null
+) : Action {
+    val countSpec: ValueSpec get() = countValue ?: FixedValue(count)
+}
 
 @Serializable
 @SerialName("mill")
-data class MillAction(val who: PlayerRef, val count: Int) : Action
+data class MillAction(
+    val who: PlayerRef,
+    val count: Int = 1,
+    /** 「〜の数だけ墓地へ送る」と書きたいときの枚数指定。 */
+    val countValue: ValueSpec? = null
+) : Action {
+    val countSpec: ValueSpec get() = countValue ?: FixedValue(count)
+}
 
 /**
  * 耐性を与える。永続の効果に書けばその間ずっと、
@@ -476,9 +503,12 @@ data class EffectBranch(
     val conditions: List<Condition> = emptyList(),
     val actions: List<Action> = emptyList(),
     /** 「〜することができる」と書く処理の番号（[actions] の位置）。 */
-    val optionalSteps: List<Int> = emptyList()
+    val optionalSteps: List<Int> = emptyList(),
+    /** 直前の処理と1つにまとめる処理の番号。「〜し、〜する」とつながる。 */
+    val linkedSteps: List<Int> = emptyList()
 ) {
     fun isOptionalStep(index: Int): Boolean = index in optionalSteps
+    fun isLinkedStep(index: Int): Boolean = index > 0 && index in linkedSteps
 }
 
 @Serializable
@@ -504,12 +534,55 @@ data class EffectClause(
     val quick: Boolean = false,
     /** 「〜することができる」と書く処理の番号（[actions] の位置）。 */
     val optionalSteps: List<Int> = emptyList(),
+    /**
+     * 直前の処理と1つにまとめる処理の番号。
+     *
+     * まとめた処理は「〜し、〜する」とつながり、**まとめて一度に**行うか行わないかを決める。
+     * 「手札を相手に見せ、デッキから墓地へ送ることができる」のように、
+     * 片方だけを行えないようにしたいときに使う。
+     */
+    val linkedSteps: List<Int> = emptyList(),
     /** この効果の発動に付く召喚の制限。 */
     val summonLocks: List<SummonLock> = emptyList(),
     /** 旧データ互換。制限欄が空でこれが true なら「1ターンに1度」として扱う。 */
     val oncePerTurn: Boolean = false
 ) {
     fun isOptionalStep(index: Int): Boolean = index in optionalSteps
+    fun isLinkedStep(index: Int): Boolean = index > 0 && index in linkedSteps
+}
+
+/**
+ * 処理のまとまり。[start] から [endInclusive] までが1つの手順として扱われる。
+ * [optional] なら「〜することができる」。
+ */
+data class StepUnit(
+    val start: Int,
+    val endInclusive: Int,
+    val optional: Boolean
+) {
+    val indices: IntRange get() = start..endInclusive
+}
+
+/**
+ * 処理をまとまりに分ける。
+ * 直前の処理とつながっている処理は、同じまとまりに入る。
+ */
+fun stepUnits(
+    size: Int,
+    optionalSteps: List<Int>,
+    linkedSteps: List<Int>
+): List<StepUnit> {
+    val units = mutableListOf<StepUnit>()
+    var start = 0
+    for (index in 0 until size) {
+        val linked = index > 0 && index in linkedSteps
+        if (index > 0 && !linked) {
+            units += StepUnit(start, index - 1, start in optionalSteps)
+            start = index
+        }
+    }
+    if (size > 0) units += StepUnit(start, size - 1, start in optionalSteps)
+    return units
 }
 
 /** 効果に、処理すべき内容があるか。 */

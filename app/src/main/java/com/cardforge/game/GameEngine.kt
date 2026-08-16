@@ -213,15 +213,28 @@ class GameEngine(
      */
     private var resolvingContinuous = false
 
-    /** いま適用されている永続の効果を、持ち主とセットで集める。 */
+    /**
+     * いま適用されている永続の効果を、持ち主とセットで集める。
+     *
+     * 自前の効果を先に集めてから、そこで与えられた効果の中の永続効果を足す。
+     * 与えられた効果はさらに効果を与えられないので、2段で打ち止めになる。
+     */
     private fun activeContinuous(): List<Triple<CardInstance, PlayerState, EffectClause>> {
+        val own = continuousFrom { it.card.effect }
+        val granted = continuousFrom { inst -> grantsFor(own, inst) }
+        return own + granted
+    }
+
+    private fun continuousFrom(
+        effectFor: (CardInstance) -> EffectText?
+    ): List<Triple<CardInstance, PlayerState, EffectClause>> {
         val result = mutableListOf<Triple<CardInstance, PlayerState, EffectClause>>()
         for (player in state.players) {
             val cards = player.monsters + player.spellsAndTraps + player.graveyard + player.hand
             for (inst in cards) {
                 // 裏側のカードの効果は働かない。
                 if (isOnField(inst) && inst.faceDown) continue
-                val effect = inst.card.effect ?: continue
+                val effect = effectFor(inst) ?: continue
                 effect.clauses.forEachIndexed { index, clause ->
                     if (!effect.isContinuous(index)) return@forEachIndexed
                     if (!isInLocation(inst, effectiveLocations(effect, index))) return@forEachIndexed
@@ -233,6 +246,42 @@ class GameEngine(
         }
         return result
     }
+
+    /** [sources] の永続効果によって [target] に与えられている効果。 */
+    private fun grantsFor(
+        sources: List<Triple<CardInstance, PlayerState, EffectClause>>,
+        target: CardInstance
+    ): EffectText? {
+        val clauses = sources.flatMap { (source, owner, clause) ->
+            clause.actions
+                .filterIsInstance<GrantEffectAction>()
+                .filter { affects(it.scope, source, owner, target) }
+                .map { it.granted }
+                // 与えられた効果がさらに効果を与えることはできない。
+                .filter { given -> given.hasWork && given.actions.none { it is GrantEffectAction } }
+        }
+        return if (clauses.isEmpty()) null else EffectText(clauses = clauses)
+    }
+
+    /**
+     * [target] が今持っている効果。自前の効果に、与えられた効果を足したもの。
+     *
+     * 与えられた効果は自前の効果の後ろに並ぶので、自前の効果の番号はずれない。
+     * 「効果を与える効果」を与えることはできない（無限に増えるのを避けるため）。
+     */
+    fun effectOf(target: CardInstance): EffectText? {
+        val own = target.card.effect
+        val granted = grantedClauses(target)
+        if (granted.isEmpty()) return own
+        val base = own ?: EffectText()
+        return base.copy(clauses = base.clauses + granted)
+    }
+
+    /** [target] が今与えられている効果。 */
+    private fun grantedClauses(target: CardInstance): List<EffectClause> =
+        withoutRecursion(emptyList()) {
+            grantsFor(continuousFrom { it.card.effect }, target)?.clauses.orEmpty()
+        }
 
     /** 永続の効果の [scope] に [target] が入っているか。 */
     private fun affects(
@@ -871,8 +920,9 @@ class GameEngine(
             }
 
             is DiscardAction -> {
+                val want = resolveValue(action.countSpec, controller, source).coerceAtLeast(0)
                 for (player in playersFor(action.who, controller)) {
-                    val n = min(action.count, player.hand.size)
+                    val n = min(want, player.hand.size)
                     if (n == 0) continue
                     val discarded = if (action.random) {
                         player.hand.toList().shuffled().take(n)
@@ -887,11 +937,11 @@ class GameEngine(
             }
 
             is MillAction -> {
+                val want = resolveValue(action.countSpec, controller, source).coerceAtLeast(0)
                 for (player in playersFor(action.who, controller)) {
-                    repeat(min(action.count, player.deck.size)) {
-                        sendToGraveyard(player.deck.first())
-                    }
-                    log("${player.name}はデッキの上から${action.count}枚を墓地へ送った。")
+                    val n = min(want, player.deck.size)
+                    repeat(n) { sendToGraveyard(player.deck.first()) }
+                    log("${player.name}はデッキの上から${n}枚を墓地へ送った。")
                 }
             }
 
@@ -940,6 +990,9 @@ class GameEngine(
             }
 
             is RestrictSummonAction -> Unit // 【制限】へ移した。旧データのために残してある。
+
+            // 効果の付与は【発動タイプ】が「永続」のときだけ働く。
+            is GrantEffectAction -> log("効果の付与は「永続」の効果に書いてください。")
 
             is RevealAction -> reveal(action.scope, action.duration, controller, source)
 
@@ -1013,7 +1066,7 @@ class GameEngine(
      * 【場所】【条件】【コスト】は共通指定と番号ごとの指定を合成して判定する。
      */
     fun activatableClauses(inst: CardInstance, controller: PlayerState): List<Int> {
-        val effect = inst.card.effect ?: return emptyList()
+        val effect = effectOf(inst) ?: return emptyList()
 
         return effect.clauses.indices.filter { index ->
             val clause = effect.clauses[index]
@@ -1083,10 +1136,8 @@ class GameEngine(
         controller: PlayerState,
         source: CardInstance?
     ) {
-        for ((position, action) in clause.actions.withIndex()) {
-            if (state.finished) return
-            if (!askOptionalStep(clause.isOptionalStep(position), action, controller)) continue
-            applyAction(action, controller, source)
+        if (!runSteps(clause.actions, clause.optionalSteps, clause.linkedSteps, controller, source)) {
+            return
         }
         if (clause.branches.isEmpty() || state.finished) return
 
@@ -1114,25 +1165,49 @@ class GameEngine(
         }
 
         for (branch in applied) {
-            for ((position, action) in branch.actions.withIndex()) {
-                if (state.finished) return
-                if (!askOptionalStep(branch.isOptionalStep(position), action, controller)) continue
-                applyAction(action, controller, source)
+            if (!runSteps(
+                    branch.actions, branch.optionalSteps, branch.linkedSteps, controller, source
+                )
+            ) {
+                return
             }
         }
     }
 
     /**
-     * 「〜することができる」と書かれた処理を行うか確認する。
-     * 強制の処理はそのまま true。
+     * 処理をまとまりごとに行う。決着がついたら false を返して打ち切る。
+     *
+     * まとまりが「任意」なら、まとめて行うかどうかを一度だけ確認する。
+     * 「手札を見せ、デッキから墓地へ送ることができる」のような、
+     * 片方だけを行えない処理をひとまとまりで扱うための仕組み。
      */
+    private suspend fun runSteps(
+        actions: List<Action>,
+        optionalSteps: List<Int>,
+        linkedSteps: List<Int>,
+        controller: PlayerState,
+        source: CardInstance?
+    ): Boolean {
+        for (unit in stepUnits(actions.size, optionalSteps, linkedSteps)) {
+            if (state.finished) return false
+            if (unit.optional && !askOptionalStep(actions, unit, controller)) continue
+            for (position in unit.indices) {
+                if (state.finished) return false
+                applyAction(actions[position], controller, source)
+            }
+        }
+        return true
+    }
+
+    /** 「〜することができる」と書かれたまとまりを行うか確認する。 */
     private suspend fun askOptionalStep(
-        optional: Boolean,
-        action: Action,
+        actions: List<Action>,
+        unit: StepUnit,
         controller: PlayerState
     ): Boolean {
-        if (!optional) return true
-        val what = EffectTextRenderer.actionToText(action, state.master)
+        val what = EffectTextRenderer.joinLinked(
+            unit.indices.map { EffectTextRenderer.actionToText(actions[it], state.master) }
+        )
         return interaction.confirm(controller.index, "${what}か？（任意）")
     }
 
@@ -1149,7 +1224,8 @@ class GameEngine(
     ): Boolean {
         val consumed = mutableListOf<CardInstance>()
         if (!canResolveActionList(
-                clause.actions, controller, source, consumed, clause.optionalSteps
+                clause.actions, controller, source, consumed,
+                clause.optionalSteps, clause.linkedSteps
             )
         ) {
             return false
@@ -1162,7 +1238,7 @@ class GameEngine(
                 conditionsMet(branch.conditions, controller, source) &&
                 canResolveActionList(
                     branch.actions, controller, source,
-                    consumed.toMutableList(), branch.optionalSteps
+                    consumed.toMutableList(), branch.optionalSteps, branch.linkedSteps
                 )
         }
     }
@@ -1173,10 +1249,17 @@ class GameEngine(
         source: CardInstance?,
         consumed: MutableList<CardInstance>,
         /** 「〜することができる」と書かれた処理の番号。足りなくても発動できる。 */
-        optionalSteps: List<Int> = emptyList()
+        optionalSteps: List<Int> = emptyList(),
+        linkedSteps: List<Int> = emptyList()
     ): Boolean {
+        // 任意のまとまりは、対象が足りなくても発動を止めない。
+        val skipped = stepUnits(actions.size, optionalSteps, linkedSteps)
+            .filter { it.optional }
+            .flatMap { it.indices }
+            .toSet()
+
         for ((position, action) in actions.withIndex()) {
-            if (position in optionalSteps) continue
+            if (position in skipped) continue
             val scope = scopeOf(action) ?: continue
             val pool = candidates(scope, controller, source).filter { card ->
                 consumed.none { it === card }
@@ -1273,7 +1356,7 @@ class GameEngine(
         inst: CardInstance,
         clauseIndex: Int
     ): List<Pair<String, Int>> {
-        val effect = inst.card.effect ?: return emptyList()
+        val effect = effectOf(inst) ?: return emptyList()
         val cardWide = effect.limits
             .filter { it.coversClause(clauseIndex) }
             .map { cardWideLimitKey(it, inst, clauseIndex) to it.times.coerceAtLeast(1) }
@@ -1321,7 +1404,7 @@ class GameEngine(
      * 画面や不具合報告で「なぜ出来ないのか」が分かるようにするためのもの。
      */
     fun whyCannotActivate(inst: CardInstance, controller: PlayerState): String? {
-        val effect = inst.card.effect
+        val effect = effectOf(inst)
         if (effect == null || effect.isEmpty) return "このカードは効果を持っていない。"
         if (activatableClauses(inst, controller).isNotEmpty()) return null
 
@@ -1404,7 +1487,7 @@ class GameEngine(
                 controller.spellsAndTraps.filter { it.card.kind != CardKind.TRAP } +
                 controller.hand + controller.graveyard + controller.banished
             result += pool.filter { inst ->
-                val effect = inst.card.effect ?: return@filter false
+                val effect = effectOf(inst) ?: return@filter false
                 activatableClauses(inst, controller).any { isQuickEffect(inst, effect, it) }
             }
         }
@@ -1589,7 +1672,7 @@ class GameEngine(
         clauseIndex: Int,
         controller: PlayerState
     ): Boolean {
-        val effect = inst.card.effect ?: return false
+        val effect = effectOf(inst) ?: return false
         val clause = effect.clauses.getOrNull(clauseIndex) ?: return false
         val isSpellOrTrap = inst.card.kind != CardKind.MONSTER
         val locations = effectiveLocations(effect, clauseIndex)
@@ -1744,7 +1827,7 @@ class GameEngine(
                 if (inst.card.kind != CardKind.TRAP) return@filter false
                 if (inst.setOnTurn !in 0 until state.turn) return@filter false
             }
-            val effect = inst.card.effect ?: return@filter false
+            val effect = effectOf(inst) ?: return@filter false
             val quick = activatableClauses(inst, responder).any {
                 isQuickEffect(inst, effect, it)
             }
@@ -1787,7 +1870,7 @@ class GameEngine(
                 ).toList()
 
             for (inst in candidates) {
-                val effect = inst.card.effect ?: continue
+                val effect = effectOf(inst) ?: continue
                 for (index in effect.clauses.indices) {
                     if (state.finished) return
                     if (!isTriggeredBy(inst, index, player, event)) continue
@@ -1811,7 +1894,7 @@ class GameEngine(
         controller: PlayerState,
         event: GameEvent
     ): Boolean {
-        val effect = inst.card.effect ?: return false
+        val effect = effectOf(inst) ?: return false
         val clause = effect.clauses.getOrNull(index) ?: return false
         if (!clause.hasWork) return false
         if (!clause.mode.isStandalone) return false
@@ -2134,7 +2217,7 @@ class GameEngine(
 
     /** いまのフェイズを【条件】で名指ししている効果を持つか。 */
     private fun declaresCurrentPhase(inst: CardInstance): Boolean {
-        val effect = inst.card.effect ?: return false
+        val effect = effectOf(inst) ?: return false
         return effect.clauses.indices.any { state.phase in effect.phasesFor(it) }
     }
 

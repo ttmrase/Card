@@ -52,7 +52,9 @@ object DefaultData {
                         EffectClause(
                             mode = ActivationMode.OPTIONAL,
                             // 墓地送りだけ「〜することができる」にする。
-                            optionalSteps = listOf(2),
+                            // 「手札を見せ、〜墓地へ送ることができる」を1つの手順にする。
+                            optionalSteps = listOf(1),
+                            linkedSteps = listOf(2),
                             actions = listOf(
                                 ToHandAction(
                                     CardScope(
