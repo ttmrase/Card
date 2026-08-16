@@ -151,6 +151,8 @@ class HandActivationTest {
                 clauses = listOf(
                     EffectClause(
                         locations = listOf(ActivationLocation.HAND),
+                        // 相手ターンに手動で撃つには【誘発即時】が要る。
+                        quick = true,
                         costs = listOf(DiscardSelfCost()),
                         actions = listOf(
                             DestroyAction(

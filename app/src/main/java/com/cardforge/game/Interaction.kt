@@ -29,6 +29,23 @@ interface Interaction {
 
     suspend fun confirm(playerIndex: Int, prompt: String): Boolean
 
+    /**
+     * [subject] は、その問い合わせのきっかけになったカード。
+     * 画面側で「何が発動されたのか」を確かめられるようにするために渡す。
+     */
+    suspend fun confirm(playerIndex: Int, prompt: String, subject: CardInstance?): Boolean =
+        confirm(playerIndex, prompt)
+
+    /** [subject] 付きの [chooseCards]。 */
+    suspend fun chooseCards(
+        playerIndex: Int,
+        prompt: String,
+        candidates: List<CardInstance>,
+        min: Int,
+        max: Int,
+        subject: CardInstance?
+    ): List<CardInstance> = chooseCards(playerIndex, prompt, candidates, min, max)
+
     /** [options] から1つ選ばせる。返り値はインデックス。 */
     suspend fun chooseOption(
         playerIndex: Int,

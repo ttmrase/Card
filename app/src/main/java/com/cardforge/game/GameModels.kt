@@ -85,6 +85,22 @@ class CardInstance(
     }
 }
 
+/** 画面に見せる出来事の種類。演出と音を選ぶのに使う。 */
+enum class BoardSignalKind(val label: String) {
+    SUMMONED("召喚"),
+    ACTIVATED("発動"),
+    ATTACK("攻撃"),
+    DESTROYED("破壊"),
+    SENT_TO_GRAVEYARD("墓地へ"),
+    BANISHED("除外"),
+    DAMAGE("ダメージ"),
+    RECOVER("回復"),
+    DRAW("ドロー")
+}
+
+/** 画面に見せる出来事1つ。 */
+data class BoardSignal(val id: Long, val kind: BoardSignalKind, val text: String)
+
 /**
  * 「このターン、〜以外を特殊召喚できない」という召喚の制限。
  * ターンの終わりに消える。
@@ -166,6 +182,19 @@ class GameState(
 
     /** トークンを作るための定義。ライブラリのトークンカードを持ち込む。 */
     var tokenDefs: List<CardDef> = emptyList()
+
+    /**
+     * 画面に見せたい出来事。UI が拾って演出と音を出し、済んだら消す。
+     */
+    val signals: SnapshotStateList<BoardSignal> = mutableStateListOf()
+
+    private var signalSeq = 0L
+
+    fun signal(kind: BoardSignalKind, text: String) {
+        signals.add(BoardSignal(signalSeq++, kind, text))
+        // 画面が見ていない場合に溜まり続けないよう、古いものは捨てる。
+        while (signals.size > 8) signals.removeAt(0)
+    }
 
     /**
      * このターンに起きた出来事。

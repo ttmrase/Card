@@ -69,11 +69,15 @@ fun DuelScreen(
     var showLog by remember { mutableStateOf(false) }
     var zoneViewer by remember { mutableStateOf<Pair<String, List<CardInstance>>?>(null) }
     var showSurrender by remember { mutableStateOf(false) }
+    var soundOn by remember { mutableStateOf(true) }
 
     ScreenScaffold(
         title = "ターン${state.turn}　${state.phase.label}",
         onBack = { showSurrender = true },
         actions = {
+            TextButton(onClick = { soundOn = !soundOn }) {
+                Text(if (soundOn) "音ON" else "音OFF", fontSize = 12.sp)
+            }
             TextButton(onClick = { showLog = !showLog }) { Text("ログ") }
         }
     ) { padding ->
@@ -121,6 +125,9 @@ fun DuelScreen(
                 },
                 onLongClick = { detail = it }
             )
+
+            // ---- 出来事の知らせ -----------------------------------------
+            BoardSignalBanner(state = state, soundOn = soundOn)
 
             // ---- 中央のコントロール -------------------------------------
             PhaseBar(
@@ -719,7 +726,12 @@ private fun PromptDialog(
         is DuelPrompt.Confirm -> AlertDialog(
             onDismissRequest = { controller.resolveConfirm(false) },
             title = { Text(who) },
-            text = { Text(prompt.message) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(prompt.message)
+                    PromptSubject(prompt.subject, master)
+                }
+            },
             confirmButton = {
                 TextButton(onClick = { controller.resolveConfirm(true) }) { Text("はい") }
             },
@@ -766,6 +778,7 @@ private fun CardSelectionDialog(
                 Modifier.heightIn(max = 420.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
+                PromptSubject(prompt.subject, master)
                 Text(
                     "選択 ${picked.size} / ${prompt.max}　（長押しで効果を確認）",
                     style = MaterialTheme.typography.labelSmall,
@@ -843,6 +856,53 @@ private fun CardSelectionDialog(
             card = card.card,
             master = master,
             onDismiss = { preview = null }
+        )
+    }
+}
+
+/**
+ * その問い合わせのきっかけになったカードを見せる。
+ * 「〇〇が発動されました」という場面で、そのカードの効果を確かめられるようにする。
+ */
+@Composable
+private fun PromptSubject(subject: CardInstance?, master: MasterData) {
+    if (subject == null) return
+    var showing by remember(subject) { mutableStateOf(false) }
+
+    Surface(
+        color = Surface2,
+        shape = RoundedCornerShape(6.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { showing = true }
+    ) {
+        Row(
+            Modifier.padding(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            CardArt(
+                imagePath = subject.card.imagePath,
+                kind = subject.card.kind,
+                modifier = Modifier.size(width = 30.dp, height = 42.dp)
+            )
+            Column(Modifier.weight(1f)) {
+                Text(subject.card.name, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                Text(
+                    EffectTextRenderer.summary(subject.card, master),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Text("効果を見る", fontSize = 11.sp, color = Gold)
+        }
+    }
+
+    if (showing) {
+        CardPreviewDialog(
+            card = subject.card,
+            master = master,
+            onDismiss = { showing = false }
         )
     }
 }

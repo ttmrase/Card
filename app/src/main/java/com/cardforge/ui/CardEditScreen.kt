@@ -53,6 +53,8 @@ fun CardEditScreen(
 
     var cropTarget by remember { mutableStateOf<String?>(null) }
     var addingSummonFilter by remember { mutableStateOf(false) }
+    var savingPreset by remember { mutableStateOf(false) }
+    var loadingPreset by remember { mutableStateOf(false) }
 
     val imagePicker = rememberLauncherForActivityResult(
         ActivityResultContracts.PickVisualMedia()
@@ -324,6 +326,27 @@ fun CardEditScreen(
             }
 
             card.effect?.let { effect ->
+                SectionCard(title = "効果の保存・呼び出し") {
+                    Text(
+                        "よく使う効果に名前を付けて保存しておくと、" +
+                            "他のカードを作るときに呼び出して使えます。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(
+                            onClick = { savingPreset = true },
+                            enabled = !effect.isEmpty,
+                            modifier = Modifier.weight(1f)
+                        ) { Text("この効果を保存") }
+                        OutlinedButton(
+                            onClick = { loadingPreset = true },
+                            enabled = library.effectPresets.isNotEmpty(),
+                            modifier = Modifier.weight(1f)
+                        ) { Text("保存した効果 (${library.effectPresets.size})") }
+                    }
+                }
+
                 EffectEditorSection(
                     kind = card.kind,
                     effect = effect,
@@ -428,6 +451,40 @@ fun CardEditScreen(
                 else error = "切り抜きに失敗しました。"
                 cropTarget = null
             }
+        )
+    }
+
+    if (savingPreset) {
+        NameInputDialog(
+            title = "この効果を保存",
+            initial = card.name.ifBlank { "" },
+            onDismiss = { savingPreset = false },
+            onConfirm = { name ->
+                card.effect?.let { repository.saveEffectPreset(name, it) }
+                savingPreset = false
+            }
+        )
+    }
+
+    if (loadingPreset) {
+        EffectPresetDialog(
+            presets = library.effectPresets,
+            master = master,
+            kind = card.kind,
+            onDismiss = { loadingPreset = false },
+            onReplace = { preset ->
+                card = card.copy(effect = preset.effect)
+                loadingPreset = false
+            },
+            onAppend = { preset ->
+                val current = card.effect ?: EffectText()
+                card = card.copy(
+                    effect = current.copy(clauses = current.clauses + preset.effect.clauses)
+                )
+                loadingPreset = false
+            },
+            onDelete = { repository.deleteEffectPreset(it.id) },
+            onRename = { preset, name -> repository.renameEffectPreset(preset.id, name) }
         )
     }
 

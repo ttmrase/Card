@@ -137,6 +137,45 @@ class QuickAndLockTest {
     }
 
     @Test
+    fun `a hand effect without the mark cannot respond`() {
+        val (state, engine) = game(turnPlayer = 1)
+        val me = state.players[0]
+        val opponent = state.players[1]
+
+        val handCard = CardInstance(
+            newId(),
+            CardDef(
+                id = newId(), name = "手札の起動役", kind = CardKind.MONSTER,
+                level = 4, atk = 1000, def = 1000,
+                effect = EffectText(
+                    clauses = listOf(
+                        EffectClause(
+                            locations = listOf(ActivationLocation.HAND),
+                            actions = listOf(
+                                DestroyAction(
+                                    CardScope(
+                                        who = PlayerRef.OPPONENT,
+                                        zone = ZoneType.MONSTER_ZONE,
+                                        count = 1
+                                    )
+                                )
+                            )
+                        )
+                    )
+                )
+            )
+        )
+        me.hand.add(handCard)
+        opponent.monsterZones[0] = monster("相手の壁")
+
+        assertFalse(
+            "【誘発即時】を付けていないので相手ターンには撃てない",
+            engine.activatableCards(me).any { it === handCard }
+        )
+        assertFalse(engine.respondableCards(me).any { it === handCard })
+    }
+
+    @Test
     fun `the quick mark shows in the card text`() {
         val text = EffectTextRenderer.render(disruptor(quick = true).card, master)
         assertTrue(text, text.contains("【誘発即時】"))

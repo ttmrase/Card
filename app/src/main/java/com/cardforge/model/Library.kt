@@ -104,10 +104,20 @@ data class Deck(
 data class Library(
     val master: MasterData = MasterData(),
     val cards: List<CardDef> = emptyList(),
-    val decks: List<Deck> = emptyList()
+    val decks: List<Deck> = emptyList(),
+    /** 他のカードで使い回すために保存した効果。 */
+    val effectPresets: List<EffectPreset> = emptyList()
 ) {
     fun card(id: String): CardDef? = cards.firstOrNull { it.id == id }
 }
+
+/** 名前を付けて保存した効果。カード作成画面から呼び出して使う。 */
+@Serializable
+data class EffectPreset(
+    val id: String,
+    val name: String,
+    val effect: EffectText
+)
 
 object DeckRules {
     const val MIN_SIZE = 20

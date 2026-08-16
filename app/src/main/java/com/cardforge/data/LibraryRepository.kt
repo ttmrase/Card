@@ -112,6 +112,26 @@ class LibraryRepository(private val context: Context) {
 
     fun updateMaster(master: MasterData) = update { it.copy(master = master) }
 
+    // -- 効果の保存 ---------------------------------------------------------
+
+    /** いま編集している効果に名前を付けて保存する。 */
+    fun saveEffectPreset(name: String, effect: EffectText) = update { lib ->
+        val preset = EffectPreset(newId(), name, effect)
+        lib.copy(effectPresets = lib.effectPresets + preset)
+    }
+
+    fun renameEffectPreset(id: String, name: String) = update { lib ->
+        lib.copy(
+            effectPresets = lib.effectPresets.map {
+                if (it.id == id) it.copy(name = name) else it
+            }
+        )
+    }
+
+    fun deleteEffectPreset(id: String) = update { lib ->
+        lib.copy(effectPresets = lib.effectPresets.filterNot { it.id == id })
+    }
+
     /**
      * マスター項目を削除し、それを参照しているカード側の参照も掃除する。
      */

@@ -1514,7 +1514,7 @@ class GameEngine(
     ): Boolean {
         for (unit in stepUnits(actions.size, optionalSteps, linkedSteps)) {
             if (state.finished) return false
-            if (unit.optional && !askOptionalStep(actions, unit, controller)) continue
+            if (unit.optional && !askOptionalStep(actions, unit, controller, source)) continue
             for (position in unit.indices) {
                 if (state.finished) return false
                 applyAction(actions[position], controller, source)
@@ -1527,12 +1527,13 @@ class GameEngine(
     private suspend fun askOptionalStep(
         actions: List<Action>,
         unit: StepUnit,
-        controller: PlayerState
+        controller: PlayerState,
+        source: CardInstance?
     ): Boolean {
         val what = EffectTextRenderer.joinLinked(
             unit.indices.map { EffectTextRenderer.actionToText(actions[it], state.master) }
         )
-        return interaction.confirm(controller.index, "${what}か？（任意）")
+        return interaction.confirm(controller.index, "${what}か？（任意）", source)
     }
 
     /**
@@ -1631,17 +1632,15 @@ class GameEngine(
     /**
      * 誘発即時効果（相手のターンや、相手の行動への割り込みでも発動できる効果）か。
      *
-     * 【誘発即時】に印を付けた効果のほか、【場所】にフィールド以外
-     * （手札・墓地・除外ゾーン）を書いた効果も、書かなくてもそう扱う。
-     * いわゆる手札誘発がこれにあたる。
+     * 【誘発即時】に印を付けた効果と、罠カードだけが割り込める。
+     * 【場所】に手札などを書いただけでは割り込めない
+     * （手札誘発は【条件】に出来事を書けば、印が無くてもその瞬間に発動する）。
      */
     fun isQuickEffect(inst: CardInstance, effect: EffectText, index: Int): Boolean {
+        // 罠はセットしてから発動するものなので、もともと割り込める。
         if (inst.card.kind == CardKind.TRAP) return true
-        if (effect.isQuick(index)) return true
-        // 手札誘発の形（手札・墓地・除外ゾーンから発動するモンスター効果）。
-        // 魔法カードは「自分のターンだけ」のままなので、印を付けたときだけ割り込める。
-        return inst.card.kind == CardKind.MONSTER &&
-            effectiveLocations(effect, index).any { it != ActivationLocation.FIELD }
+        // それ以外は【誘発即時】に印を付けた効果だけ。【場所】だけでは割り込めない。
+        return effect.isQuick(index)
     }
 
     // -----------------------------------------------------------------------
@@ -1971,7 +1970,7 @@ class GameEngine(
 
         val blocked = withoutResponses(effect.noResponseFrom, controller) {
             emit(GameEvent(GameEventType.ACTIVATED, controller.index, inst))
-            offerResponse(controller, "「${inst.card.name}」の発動")
+            offerResponse(controller, "「${inst.card.name}」の発動", inst)
         }
         if (blocked) {
             log("「${inst.card.name}」の発動は無効になった。")
@@ -2151,7 +2150,7 @@ class GameEngine(
         // 「この発動に対して効果を発動できない」は、発動を知らせる前から働く。
         val negated = withoutResponses(effect.noResponseFor(clauseIndex), controller) {
             emit(GameEvent(GameEventType.ACTIVATED, controller.index, inst))
-            offerResponse(controller, "「${inst.card.name}」の発動")
+            offerResponse(controller, "「${inst.card.name}」の発動", inst)
         }
         if (negated) {
             log("「${inst.card.name}」の発動は無効になった。")
@@ -2424,7 +2423,11 @@ class GameEngine(
     /**
      * 相手に伏せ罠での応答を許す。無効化する罠が発動されたら true を返す。
      */
-    private suspend fun offerResponse(activator: PlayerState, description: String): Boolean {
+    private suspend fun offerResponse(
+        activator: PlayerState,
+        description: String,
+        subject: CardInstance? = null
+    ): Boolean {
         if (responseDepth > 0 || state.finished) return false
         val responder = state.opponentOf(activator)
         if (!canRespondNow(responder)) {
@@ -2437,7 +2440,7 @@ class GameEngine(
         val chosen = interaction.chooseCards(
             responder.index,
             "$description に対してカードを発動しますか？（発動しない場合はそのまま決定）",
-            cards, 0, 1
+            cards, 0, 1, subject
         )
         val card = chosen.firstOrNull() ?: return false
 
@@ -2499,6 +2502,7 @@ class GameEngine(
                     sourceCard = raw.sourceCard ?: causeSource
                 )
             state.eventsThisTurn += event
+            announce(event)
             triggerDepth++
             try {
                 dispatch(event)
@@ -2506,6 +2510,28 @@ class GameEngine(
                 triggerDepth--
             }
         }
+    }
+
+    /** 出来事を画面向けの合図に変える。演出と音はこれを見て出す。 */
+    private fun announce(event: GameEvent) {
+        val kind = when (event.type) {
+            GameEventType.NORMAL_SUMMONED, GameEventType.SPECIAL_SUMMONED ->
+                BoardSignalKind.SUMMONED
+
+            GameEventType.ACTIVATED -> BoardSignalKind.ACTIVATED
+            GameEventType.ATTACK_DECLARED -> BoardSignalKind.ATTACK
+            GameEventType.DESTROYED -> BoardSignalKind.DESTROYED
+            GameEventType.SENT_TO_GRAVEYARD -> BoardSignalKind.SENT_TO_GRAVEYARD
+            GameEventType.BANISHED -> BoardSignalKind.BANISHED
+            GameEventType.DAMAGE_TAKEN -> BoardSignalKind.DAMAGE
+            GameEventType.LIFE_RECOVERED -> BoardSignalKind.RECOVER
+            GameEventType.CARD_DRAWN -> BoardSignalKind.DRAW
+            // 「召喚・特殊召喚された」は上の2つと重なるので出さない。
+            else -> return
+        }
+        val who = state.players.getOrNull(event.playerIndex)?.name.orEmpty()
+        val what = event.card?.let { "「${it.card.name}」" } ?: who
+        state.signal(kind, what)
     }
 
     private suspend fun dispatch(event: GameEvent) {
@@ -2528,7 +2554,7 @@ class GameEngine(
                     if (clause.mode == ActivationMode.OPTIONAL) {
                         val label = "「${inst.card.name}」の" +
                             "${EffectNumbers.circled(index)}を発動しますか？"
-                        if (!interaction.confirm(player.index, label)) continue
+                        if (!interaction.confirm(player.index, label, inst)) continue
                     }
                     activateClause(inst, index, player)
                 }
@@ -2682,7 +2708,7 @@ class GameEngine(
         applyPosition(inst, Position.ATTACK)
         log("${controller.name}は「${inst.card.name}」を召喚した。")
 
-        if (offerResponse(controller, "「${inst.card.name}」の召喚")) {
+        if (offerResponse(controller, "「${inst.card.name}」の召喚", inst)) {
             log("召喚は無効になった。")
             destroy(inst)
             return true
@@ -2776,7 +2802,7 @@ class GameEngine(
         }
         if (state.finished) return
 
-        if (offerResponse(attackingPlayer, "「${attacker.card.name}」の攻撃")) {
+        if (offerResponse(attackingPlayer, "「${attacker.card.name}」の攻撃", attacker)) {
             log("攻撃は無効になった。")
             return
         }

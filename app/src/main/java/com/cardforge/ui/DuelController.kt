@@ -13,19 +13,25 @@ sealed interface DuelPrompt {
     val playerIndex: Int
     val message: String
 
+    /** この問い合わせのきっかけになったカード。無い場合は null。 */
+    val subject: CardInstance? get() = null
+
     data class CardSelection(
         override val playerIndex: Int,
         override val message: String,
         val candidates: List<CardInstance>,
         val min: Int,
         val max: Int,
-        val deferred: CompletableDeferred<List<CardInstance>>
+        val deferred: CompletableDeferred<List<CardInstance>>,
+        /** この問い合わせのきっかけになったカード。中身を確かめられるようにする。 */
+        override val subject: CardInstance? = null
     ) : DuelPrompt
 
     data class Confirm(
         override val playerIndex: Int,
         override val message: String,
-        val deferred: CompletableDeferred<Boolean>
+        val deferred: CompletableDeferred<Boolean>,
+        override val subject: CardInstance? = null
     ) : DuelPrompt
 
     data class Options(
@@ -131,11 +137,20 @@ class DuelController(
             candidates: List<CardInstance>,
             min: Int,
             max: Int
+        ): List<CardInstance> = chooseCards(playerIndex, prompt, candidates, min, max, null)
+
+        override suspend fun chooseCards(
+            playerIndex: Int,
+            prompt: String,
+            candidates: List<CardInstance>,
+            min: Int,
+            max: Int,
+            subject: CardInstance?
         ): List<CardInstance> {
             if (candidates.isEmpty()) return emptyList()
             val deferred = CompletableDeferred<List<CardInstance>>()
             pendingPrompt = DuelPrompt.CardSelection(
-                playerIndex, prompt, candidates, min, max, deferred
+                playerIndex, prompt, candidates, min, max, deferred, subject
             )
             return deferred.await()
         }
@@ -146,9 +161,16 @@ class DuelController(
             freeZones: List<Int>
         ): Int? = freeZones.firstOrNull()
 
-        override suspend fun confirm(playerIndex: Int, prompt: String): Boolean {
+        override suspend fun confirm(playerIndex: Int, prompt: String): Boolean =
+            confirm(playerIndex, prompt, null)
+
+        override suspend fun confirm(
+            playerIndex: Int,
+            prompt: String,
+            subject: CardInstance?
+        ): Boolean {
             val deferred = CompletableDeferred<Boolean>()
-            pendingPrompt = DuelPrompt.Confirm(playerIndex, prompt, deferred)
+            pendingPrompt = DuelPrompt.Confirm(playerIndex, prompt, deferred, subject)
             return deferred.await()
         }
 
@@ -187,6 +209,16 @@ private class RoutingInteraction(
         max: Int
     ): List<CardInstance> = of(playerIndex).chooseCards(playerIndex, prompt, candidates, min, max)
 
+    override suspend fun chooseCards(
+        playerIndex: Int,
+        prompt: String,
+        candidates: List<CardInstance>,
+        min: Int,
+        max: Int,
+        subject: CardInstance?
+    ): List<CardInstance> =
+        of(playerIndex).chooseCards(playerIndex, prompt, candidates, min, max, subject)
+
     override suspend fun chooseZone(
         playerIndex: Int,
         prompt: String,
@@ -195,6 +227,12 @@ private class RoutingInteraction(
 
     override suspend fun confirm(playerIndex: Int, prompt: String): Boolean =
         of(playerIndex).confirm(playerIndex, prompt)
+
+    override suspend fun confirm(
+        playerIndex: Int,
+        prompt: String,
+        subject: CardInstance?
+    ): Boolean = of(playerIndex).confirm(playerIndex, prompt, subject)
 
     override suspend fun chooseOption(
         playerIndex: Int,

@@ -393,8 +393,9 @@ private fun ClauseEditor(
             Text("誘発即時（相手のターンや、相手の行動への割り込みでも発動できる）")
         }
         Text(
-            "【場所】がフィールド以外（手札・墓地・除外ゾーン）の効果と罠カードは、" +
-                "チェックを入れなくても割り込めます。",
+            "罠カードは、チェックを入れなくても割り込めます。" +
+                "【条件】に「〜した場合」を書いた効果は、チェックが無くても" +
+                "その出来事が起きた瞬間に発動します（手札誘発はこの形です）。",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
