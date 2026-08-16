@@ -39,22 +39,20 @@ object DefaultData {
                 categoryIds = listOf(araragi),
                 effect = EffectText(
                     locations = listOf(ActivationLocation.FIELD),
+                    // 効果ではなく発動そのものに付く制限。無効にされても掛かったまま。
+                    summonLocks = listOf(
+                        SummonLock(
+                            who = PlayerRef.SELF,
+                            summon = SummonKind.SPECIAL,
+                            filters = listOf(CategoryFilter(araragi)),
+                            except = true
+                        )
+                    ),
                     clauses = listOf(
-                        // 発動しただけで掛かる、そのターンの召喚制限。
-                        EffectClause(
-                            mode = ActivationMode.ON_ACTIVATION,
-                            actions = listOf(
-                                RestrictSummonAction(
-                                    who = PlayerRef.SELF,
-                                    summon = SummonKind.SPECIAL,
-                                    filters = listOf(CategoryFilter(araragi)),
-                                    except = true,
-                                    fromActivation = true
-                                )
-                            )
-                        ),
                         EffectClause(
                             mode = ActivationMode.OPTIONAL,
+                            // 墓地送りだけ「〜することができる」にする。
+                            optionalSteps = listOf(2),
                             actions = listOf(
                                 ToHandAction(
                                     CardScope(

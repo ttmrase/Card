@@ -196,8 +196,8 @@ class HandActivationTest {
             "相手ターンでも割り込める",
             engine.respondableCards(me).any { it === trap }
         )
-        assertFalse(
-            "自分のターンではないので、通常の発動候補には出ない",
+        assertTrue(
+            "誘発即時なので、相手ターンでも普通の発動候補に出る",
             engine.activatableCards(me).any { it === trap }
         )
     }

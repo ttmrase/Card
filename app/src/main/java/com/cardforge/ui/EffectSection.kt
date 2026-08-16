@@ -47,6 +47,7 @@ fun EffectEditorSection(
     var costSlot by remember { mutableStateOf<EditSlot?>(null) }
     var limitSlot by remember { mutableStateOf<EditSlot?>(null) }
     var actionSlot by remember { mutableStateOf<EditSlot?>(null) }
+    var lockSlot by remember { mutableStateOf<EditSlot?>(null) }
 
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
 
@@ -97,6 +98,17 @@ fun EffectEditorSection(
                 }
             )
 
+            SummonLockList(
+                locks = effect.summonLocks,
+                master = master,
+                label = "【制限】召喚の縛り（効果ではないので無効にされても残る）",
+                onAdd = { lockSlot = EditSlot() },
+                onEdit = { lockSlot = EditSlot(itemIndex = it) },
+                onRemove = { index ->
+                    onChange(effect.copy(summonLocks = effect.summonLocks.removedAt(index)))
+                }
+            )
+
             HorizontalDivider()
             Text(
                 "【発動後】",
@@ -137,7 +149,8 @@ fun EffectEditorSection(
                 onConditionSlot = { conditionSlot = it },
                 onCostSlot = { costSlot = it },
                 onLimitSlot = { limitSlot = it },
-                onActionSlot = { actionSlot = it }
+                onActionSlot = { actionSlot = it },
+                onLockSlot = { lockSlot = it }
             )
         }
 
@@ -191,6 +204,18 @@ fun EffectEditorSection(
         )
     }
 
+    lockSlot?.let { slot ->
+        SummonLockDialog(
+            master = master,
+            initial = slot.itemIndex?.let { effect.locksAt(slot).getOrNull(it) },
+            onDismiss = { lockSlot = null },
+            onConfirm = { lock ->
+                onChange(effect.withLocks(slot) { it.upsert(slot.itemIndex, lock) })
+                lockSlot = null
+            }
+        )
+    }
+
     actionSlot?.let { slot ->
         ActionDialog(
             initial = slot.itemIndex?.let { effect.actionsAt(slot).getOrNull(it) },
@@ -211,6 +236,14 @@ fun EffectEditorSection(
 private fun <T> List<T>.removedAt(index: Int): List<T> =
     toMutableList().also { it.removeAt(index) }
 
+/** 任意にする処理の番号を入れ替える。 */
+private fun List<Int>.toggled(index: Int): List<Int> =
+    if (index in this) this - index else this + index
+
+/** [removed] 番目の処理を消したあとの、任意にする処理の番号。 */
+private fun List<Int>.shiftedAfterRemoval(removed: Int): List<Int> =
+    filter { it != removed }.map { if (it > removed) it - 1 else it }
+
 private fun <T> List<T>.replacedAt(index: Int, value: T): List<T> =
     toMutableList().also { it[index] = value }
 
@@ -229,6 +262,9 @@ private fun EffectText.costsAt(slot: EditSlot): List<Cost> =
 
 private fun EffectText.limitsAt(slot: EditSlot): List<UsageLimit> =
     if (slot.clauseIndex == null) limits else clauses[slot.clauseIndex].limits
+
+private fun EffectText.locksAt(slot: EditSlot): List<SummonLock> =
+    if (slot.clauseIndex == null) summonLocks else clauses[slot.clauseIndex].summonLocks
 
 private fun EffectText.actionsAt(slot: EditSlot): List<Action> = when {
     slot.clauseIndex == null -> emptyList()
@@ -264,6 +300,13 @@ private fun EffectText.withLimits(
 ): EffectText =
     if (slot.clauseIndex == null) copy(limits = block(limits))
     else updateClause(slot.clauseIndex) { it.copy(limits = block(it.limits)) }
+
+private fun EffectText.withLocks(
+    slot: EditSlot,
+    block: (List<SummonLock>) -> List<SummonLock>
+): EffectText =
+    if (slot.clauseIndex == null) copy(summonLocks = block(summonLocks))
+    else updateClause(slot.clauseIndex) { it.copy(summonLocks = block(it.summonLocks)) }
 
 private fun EffectText.withActions(
     slot: EditSlot,
@@ -305,7 +348,8 @@ private fun ClauseEditor(
     onConditionSlot: (EditSlot) -> Unit,
     onCostSlot: (EditSlot) -> Unit,
     onLimitSlot: (EditSlot) -> Unit,
-    onActionSlot: (EditSlot) -> Unit
+    onActionSlot: (EditSlot) -> Unit,
+    onLockSlot: (EditSlot) -> Unit
 ) {
     SectionCard(
         title = "効果 ${EffectNumbers.circled(index)}",
@@ -329,6 +373,20 @@ private fun ClauseEditor(
             "「発動時」はこのカード自体を発動したときにだけ処理されます。" +
                 "「永続」は発動せず、このカードが【場所】にある限り適用されます。\n" +
                 "【条件】に「〜した場合」を入れると、その出来事で発動する効果になります。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Checkbox(
+                checked = clause.quick,
+                onCheckedChange = { onChange(clause.copy(quick = it)) }
+            )
+            Text("誘発即時（相手のターンや、相手の行動への割り込みでも発動できる）")
+        }
+        Text(
+            "【場所】がフィールド以外（手札・墓地・除外ゾーン）の効果と罠カードは、" +
+                "チェックを入れなくても割り込めます。",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -368,6 +426,15 @@ private fun ClauseEditor(
             onRemove = { onChange(clause.copy(limits = clause.limits.removedAt(it))) }
         )
 
+        SummonLockList(
+            locks = clause.summonLocks,
+            master = master,
+            label = "この効果だけの【制限】召喚の縛り",
+            onAdd = { onLockSlot(slot(null, null)) },
+            onEdit = { onLockSlot(slot(null, it)) },
+            onRemove = { onChange(clause.copy(summonLocks = clause.summonLocks.removedAt(it))) }
+        )
+
         Text(
             "この効果だけの【発動後】",
             style = MaterialTheme.typography.labelSmall,
@@ -389,11 +456,22 @@ private fun ClauseEditor(
         HorizontalDivider()
         ActionList(
             actions = clause.actions,
+            optionalSteps = clause.optionalSteps,
             master = master,
             label = "【効果】",
             onAdd = { onActionSlot(slot(null, null)) },
             onEdit = { onActionSlot(slot(null, it)) },
-            onRemove = { onChange(clause.copy(actions = clause.actions.removedAt(it))) }
+            onRemove = {
+                onChange(
+                    clause.copy(
+                        actions = clause.actions.removedAt(it),
+                        optionalSteps = clause.optionalSteps.shiftedAfterRemoval(it)
+                    )
+                )
+            },
+            onToggleOptional = {
+                onChange(clause.copy(optionalSteps = clause.optionalSteps.toggled(it)))
+            }
         )
 
         // ---- 場合分け ---------------------------------------------------
@@ -467,6 +545,7 @@ private fun ClauseEditor(
 
                     ActionList(
                         actions = branch.actions,
+                        optionalSteps = branch.optionalSteps,
                         master = master,
                         label = "この場合の【効果】",
                         onAdd = { onActionSlot(slot(branchIndex, null)) },
@@ -475,7 +554,20 @@ private fun ClauseEditor(
                             onChange(
                                 clause.copy(
                                     branches = clause.branches.replacedAt(branchIndex) {
-                                        it.copy(actions = it.actions.removedAt(actionIndex))
+                                        it.copy(
+                                            actions = it.actions.removedAt(actionIndex),
+                                            optionalSteps =
+                                                it.optionalSteps.shiftedAfterRemoval(actionIndex)
+                                        )
+                                    }
+                                )
+                            )
+                        },
+                        onToggleOptional = { actionIndex ->
+                            onChange(
+                                clause.copy(
+                                    branches = clause.branches.replacedAt(branchIndex) {
+                                        it.copy(optionalSteps = it.optionalSteps.toggled(actionIndex))
                                     }
                                 )
                             )
@@ -586,8 +678,8 @@ private fun LimitList(
 }
 
 @Composable
-private fun ActionList(
-    actions: List<Action>,
+private fun SummonLockList(
+    locks: List<SummonLock>,
     master: MasterData,
     label: String,
     onAdd: () -> Unit,
@@ -596,12 +688,43 @@ private fun ActionList(
 ) {
     EditableList(
         label = label,
-        lines = actions.map { EffectTextRenderer.actionToText(it, master) + "。" },
+        lines = locks.map { EffectTextRenderer.summonLockToText(it, master) },
+        addLabel = "＋ 召喚の制限を追加",
+        onAdd = onAdd,
+        onEdit = onEdit,
+        onRemove = onRemove
+    )
+}
+
+@Composable
+private fun ActionList(
+    actions: List<Action>,
+    optionalSteps: List<Int>,
+    master: MasterData,
+    label: String,
+    onAdd: () -> Unit,
+    onEdit: (Int) -> Unit,
+    onRemove: (Int) -> Unit,
+    onToggleOptional: (Int) -> Unit
+) {
+    EditableList(
+        label = label,
+        lines = actions.mapIndexed { index, action ->
+            val text = EffectTextRenderer.actionToText(action, master)
+            if (index in optionalSteps) EffectTextRenderer.optionalStepText(text) + "。"
+            else text + "。"
+        },
         addLabel = "＋ 効果の文を追加",
         emptyHint = "まだ効果がありません。",
         onAdd = onAdd,
         onEdit = onEdit,
-        onRemove = onRemove
+        onRemove = onRemove,
+        rowTrailing = { index ->
+            Chip(
+                if (index in optionalSteps) "任意" else "強制",
+                selected = index in optionalSteps
+            ) { onToggleOptional(index) }
+        }
     )
 }
 
@@ -614,7 +737,9 @@ private fun EditableList(
     emptyHint: String? = null,
     onAdd: () -> Unit,
     onEdit: (Int) -> Unit,
-    onRemove: (Int) -> Unit
+    onRemove: (Int) -> Unit,
+    /** 行ごとに出す追加のボタン。任意／強制の切り替えなどに使う。 */
+    rowTrailing: (@Composable (Int) -> Unit)? = null
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text(
@@ -647,6 +772,7 @@ private fun EditableList(
                             .clickable { onEdit(index) }
                             .padding(vertical = 10.dp)
                     )
+                    rowTrailing?.invoke(index)
                     IconButton(onClick = { onRemove(index) }) {
                         Icon(
                             Icons.Default.Delete,

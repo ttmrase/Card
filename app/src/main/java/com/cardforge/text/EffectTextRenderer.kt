@@ -135,15 +135,21 @@ object EffectTextRenderer {
     // 述語（効果）
     // -----------------------------------------------------------------------
 
-    /** 「〜以外のモンスターを特殊召喚できない」という制限の文。 */
-    fun restrictSummonToText(action: RestrictSummonAction, master: MasterData): String {
-        val lead = if (action.fromActivation) "このカードを発動するターン、" else "このターン、"
+    /** 「このカードを発動するターン、〜できない」という【制限】の文。 */
+    fun summonLockToText(lock: SummonLock, master: MasterData): String {
         val noun =
-            if (action.filters.isEmpty()) "モンスター"
-            else filtersToNoun(action.filters, master, ZoneType.MONSTER_ZONE)
-        val target = if (action.except) "${noun}以外のモンスター" else noun
-        return "$lead${action.who.label}は${target}を${action.summon.label}できない"
+            if (lock.filters.isEmpty()) "モンスター"
+            else filtersToNoun(lock.filters, master, ZoneType.MONSTER_ZONE)
+        val target = if (lock.except) "${noun}以外のモンスター" else noun
+        return "このカードを発動するターン、${lock.who.label}は${target}を${lock.summon.label}できない"
     }
+
+    /** 旧データ用。述語として書かれていた召喚制限の文。 */
+    fun restrictSummonToText(action: RestrictSummonAction, master: MasterData): String =
+        summonLockToText(
+            SummonLock(action.who, action.summon, action.filters, action.except),
+            master
+        )
 
     /** 「手札を相手に見せる」という文。 */
     fun revealToText(scope: CardScope, duration: RevealDuration, master: MasterData): String {
@@ -391,10 +397,10 @@ object EffectTextRenderer {
         if (effect.costs.isNotEmpty()) {
             lines += "【コスト】" + effect.costs.joinToString("、") { costToText(it, master) }
         }
-        if (effect.limits.isNotEmpty()) {
-            lines += "【制限】" + effect.limits.joinToString("、") {
-                limitToText(it, master, cardWide = true) { i -> numberLabel(effect, i) }
-            }
+        val cardLimits = effect.limits.map { limitToText(it, master, cardWide = true) } +
+            effect.summonLocks.map { summonLockToText(it, master) }
+        if (cardLimits.isNotEmpty()) {
+            lines += "【制限】" + cardLimits.joinToString("、")
         }
         // 【発動後】は、省略時の既定と違うときだけ明記する。
         // （魔法・罠は「墓地へ送る」、モンスターは「そのまま残す」が既定）
@@ -402,17 +408,10 @@ object EffectTextRenderer {
             ?.takeIf { it != EffectText.defaultAfterActivation(card.kind) }
             ?.let { lines += "【発動後】" + it.label }
 
-        // 番号を振らない効果（発動しただけで掛かる制限）を先に、その後に番号付きの効果。
-        val ordered = effect.clauses.indices
-            .filter { effect.clauses[it].hasWork }
-            .sortedBy { if (isUnnumbered(effect, it)) 0 else 1 }
-
         // 各効果。
-        ordered.forEach { index ->
-            val clause = effect.clauses[index]
-            val sb = StringBuilder(
-                if (isUnnumbered(effect, index)) "" else numberLabel(effect, index) + "："
-            )
+        effect.clauses.forEachIndexed { index, clause ->
+            if (!clause.hasWork) return@forEachIndexed
+            val sb = StringBuilder(circledNumber(index) + "：")
 
             // 効果そのものの前に置く【…】の欄。区切りを入れて、効果本体と分ける。
             val prefixes = mutableListOf<String>()
@@ -428,8 +427,14 @@ object EffectTextRenderer {
             if (clause.costs.isNotEmpty()) {
                 prefixes += "【コスト】" + clause.costs.joinToString("、") { costToText(it, master) }
             }
+            if (clause.summonLocks.isNotEmpty()) {
+                prefixes += "【制限】" + clause.summonLocks.joinToString("、") {
+                    summonLockToText(it, master)
+                }
+            }
             // 効果番号ごとの【発動後】は、明示されていれば常に書く。
             clause.afterActivation?.let { prefixes += "【発動後】" + it.label }
+            if (clause.quick) prefixes += "【誘発即時】"
             if (prefixes.isNotEmpty()) {
                 sb.append(prefixes.joinToString(SECTION_SEPARATOR)).append(EFFECT_ARROW)
             }
@@ -455,11 +460,14 @@ object EffectTextRenderer {
                 sb.append(
                     clause.actions.mapIndexed { position, action ->
                         val text = actionToText(action, master)
-                        // 最後の文だけ「〜できる（任意）／〜する（強制）」を書き分ける。
-                        if (position == clause.actions.lastIndex && effect.isTriggered(index)) {
-                            applyMode(text, clause.mode)
-                        } else {
-                            text
+                        when {
+                            // 「〜することができる」と書く処理。
+                            clause.isOptionalStep(position) -> optionalStepText(text)
+                            // 最後の文だけ「〜できる（任意）／〜する（強制）」を書き分ける。
+                            position == clause.actions.lastIndex && effect.isTriggered(index) ->
+                                applyMode(text, clause.mode)
+
+                            else -> text
                         }
                     }.joinToString("。その後、")
                 )
@@ -467,39 +475,12 @@ object EffectTextRenderer {
             if (clause.actions.isNotEmpty()) sb.append("。")
             appendBranches(sb, clause, master)
             effect.clauseLimitsFor(index).forEach { limit ->
-                val text = limitToText(limit, master, cardWide = false) { i ->
-                    numberLabel(effect, i)
-                }
-                sb.append(text + "。")
+                sb.append(limitToText(limit, master, cardWide = false) + "。")
             }
             lines += sb.toString()
         }
 
         return lines.joinToString("\n")
-    }
-
-    /**
-     * 番号を振らない効果かどうか。
-     * 「このカードを発動するターン、〜できない」のような、発動しただけで掛かる制限は
-     * 効果番号より前に書くものなので、番号を付けない。
-     */
-    private fun isUnnumbered(effect: EffectText, index: Int): Boolean {
-        val clause = effect.clauses.getOrNull(index) ?: return false
-        return effect.isOnActivation(index) &&
-            clause.branches.isEmpty() &&
-            clause.actions.isNotEmpty() &&
-            clause.actions.all { it is RestrictSummonAction }
-    }
-
-    /** [index] 番目の効果に振る番号。番号を振らない効果は飛ばして数える。 */
-    private fun numberLabel(effect: EffectText, index: Int): String {
-        var position = 0
-        for (i in effect.clauses.indices) {
-            if (!effect.clauses[i].hasWork || isUnnumbered(effect, i)) continue
-            if (i == index) return circledNumber(position)
-            position++
-        }
-        return circledNumber(index)
     }
 
     /** 永続の効果が有効になる場所。省略時はフィールド。 */
@@ -577,7 +558,12 @@ object EffectTextRenderer {
                 sb.append("それ以外の場合")
             }
             sb.append("：")
-            sb.append(branch.actions.joinToString("。その後、") { actionToText(it, master) })
+            sb.append(
+                branch.actions.mapIndexed { position, action ->
+                    val text = actionToText(action, master)
+                    if (branch.isOptionalStep(position)) optionalStepText(text) else text
+                }.joinToString("。その後、")
+            )
             sb.append("。")
         }
     }
@@ -587,9 +573,16 @@ object EffectTextRenderer {
         conditions.filterIsInstance<EventCondition>() +
             conditions.filterNot { it is EventCondition }
 
+    /** 「〜することができる」と書く、任意の処理の文。 */
+    fun optionalStepText(text: String): String = text + "ことができる"
+
     /** 述語の語尾を、任意発動なら「できる」に置き換える。 */
     private fun applyMode(text: String, mode: ActivationMode): String {
         if (mode == ActivationMode.MANDATORY) return text
+        return toOptional(text)
+    }
+
+    private fun toOptional(text: String): String {
         return when {
             text.endsWith("する") -> text.removeSuffix("する") + "できる"
             text.endsWith("送る") -> text.removeSuffix("送る") + "送ることができる"

@@ -36,7 +36,6 @@ private enum class ActionType(val label: String, val usesScope: Boolean) {
     ACTIVATE_CARD("そのカードを発動する", true),
     GRANT_PROTECTION("耐性を与える（永続向き）", true),
     PREVENT_ATTACK("攻撃できなくする（永続向き）", true),
-    RESTRICT_SUMMON("召喚・特殊召喚を制限する", false),
     REVEAL("カードを相手に見せる（公開する）", true),
     NEGATE("発動を無効にし破壊する", false)
 }
@@ -60,7 +59,8 @@ private fun typeOf(action: Action): ActionType = when (action) {
     is ActivateCardAction -> ActionType.ACTIVATE_CARD
     is GrantProtectionAction -> ActionType.GRANT_PROTECTION
     is PreventAttackAction -> ActionType.PREVENT_ATTACK
-    is RestrictSummonAction -> ActionType.RESTRICT_SUMMON
+    // 旧データ用。編集画面では【制限】として扱う。
+    is RestrictSummonAction -> ActionType.NEGATE
     is RevealAction -> ActionType.REVEAL
     NegateAction -> ActionType.NEGATE
 }
@@ -163,19 +163,6 @@ fun ActionDialog(
     var protection by remember {
         mutableStateOf((initial as? GrantProtectionAction)?.kind ?: ProtectionKind.OPPONENT_EFFECTS)
     }
-    var summonKind by remember {
-        mutableStateOf((initial as? RestrictSummonAction)?.summon ?: SummonKind.SPECIAL)
-    }
-    var restrictFilters by remember {
-        mutableStateOf((initial as? RestrictSummonAction)?.filters ?: emptyList())
-    }
-    var restrictExcept by remember {
-        mutableStateOf((initial as? RestrictSummonAction)?.except ?: true)
-    }
-    var restrictFromActivation by remember {
-        mutableStateOf((initial as? RestrictSummonAction)?.fromActivation ?: true)
-    }
-    var showRestrictFilter by remember { mutableStateOf(false) }
     var revealDuration by remember {
         mutableStateOf(
             (initial as? RevealAction)?.duration ?: RevealDuration.MOMENT
@@ -206,13 +193,6 @@ fun ActionDialog(
         ActionType.ACTIVATE_CARD -> ActivateCardAction(scope)
         ActionType.GRANT_PROTECTION -> GrantProtectionAction(scope, protection)
         ActionType.PREVENT_ATTACK -> PreventAttackAction(scope)
-        ActionType.RESTRICT_SUMMON -> RestrictSummonAction(
-            who = who,
-            summon = summonKind,
-            filters = restrictFilters,
-            except = restrictExcept,
-            fromActivation = restrictFromActivation
-        )
         ActionType.REVEAL -> RevealAction(scope, revealDuration)
         ActionType.NEGATE -> NegateAction
     }
@@ -340,49 +320,6 @@ fun ActionDialog(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
 
-                    ActionType.RESTRICT_SUMMON -> {
-                        HorizontalDivider()
-                        Dropdown("制限を受ける側", PlayerRef.all, who, { it.label }) { who = it }
-                        Dropdown("制限する召喚", SummonKind.all, summonKind, { it.label }) {
-                            summonKind = it
-                        }
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Checkbox(
-                                checked = restrictExcept,
-                                onCheckedChange = { restrictExcept = it }
-                            )
-                            Text("指定したカード「以外」を出せなくする")
-                        }
-                        Text(
-                            "出せなくするカードの条件（空ならモンスター全体）",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        FlowRowSimple {
-                            restrictFilters.forEachIndexed { index, filter ->
-                                Chip(filterChipLabel(filter, master) + " ✕", selected = true) {
-                                    restrictFilters = restrictFilters.toMutableList()
-                                        .also { it.removeAt(index) }
-                                }
-                            }
-                            Chip("＋ 条件を追加") { showRestrictFilter = true }
-                        }
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Checkbox(
-                                checked = restrictFromActivation,
-                                onCheckedChange = { restrictFromActivation = it }
-                            )
-                            Text("「このカードを発動するターン」と書く")
-                        }
-                        Text(
-                            "制限はこのターンの間だけ続きます。" +
-                                "【発動タイプ】を「発動時」にすると、" +
-                                "効果を使うかどうかに関わらず発動しただけで掛かります。",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-
                     ActionType.REVEAL -> {
                         HorizontalDivider()
                         Dropdown(
@@ -422,16 +359,6 @@ fun ActionDialog(
         dismissButton = { TextButton(onClick = onDismiss) { Text("キャンセル") } }
     )
 
-    if (showRestrictFilter) {
-        FilterDialog(
-            master = master,
-            onDismiss = { showRestrictFilter = false },
-            onConfirm = {
-                restrictFilters = restrictFilters + it
-                showRestrictFilter = false
-            }
-        )
-    }
 }
 
 // ===========================================================================
@@ -936,4 +863,92 @@ fun LimitDialog(
         confirmButton = { TextButton(onClick = { onConfirm(build()) }) { Text("決定") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("キャンセル") } }
     )
+}
+
+// ===========================================================================
+// 【制限】召喚の縛り
+// ===========================================================================
+
+/**
+ * 「このカードを発動するターン、〜を特殊召喚できない」という【制限】のダイアログ。
+ *
+ * 効果ではなく発動そのものに付く制限なので、効果を無効にされても掛かったままになる。
+ */
+@Composable
+fun SummonLockDialog(
+    master: MasterData,
+    initial: SummonLock? = null,
+    onDismiss: () -> Unit,
+    onConfirm: (SummonLock) -> Unit
+) {
+    var who by remember { mutableStateOf(initial?.who ?: PlayerRef.SELF) }
+    var summon by remember { mutableStateOf(initial?.summon ?: SummonKind.SPECIAL) }
+    var filters by remember { mutableStateOf(initial?.filters ?: emptyList()) }
+    var except by remember { mutableStateOf(initial?.except ?: true) }
+    var showFilter by remember { mutableStateOf(false) }
+
+    fun build() = SummonLock(who, summon, filters, except)
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (initial == null) "召喚の制限を追加" else "召喚の制限を編集") },
+        text = {
+            Column(
+                Modifier
+                    .heightIn(max = 440.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    "発動そのものに付く制限なので、効果を無効にされても掛かったままになります。" +
+                        "制限はこのターンの間だけ続きます。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Dropdown("制限を受ける側", PlayerRef.all, who, { it.label }) { who = it }
+                Dropdown("制限する召喚", SummonKind.all, summon, { it.label }) { summon = it }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(checked = except, onCheckedChange = { except = it })
+                    Text("指定したカード「以外」を出せなくする")
+                }
+                Text(
+                    "対象のカードの条件（空ならモンスター全体）",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                FlowRowSimple {
+                    filters.forEachIndexed { index, filter ->
+                        Chip(filterChipLabel(filter, master) + " ✕", selected = true) {
+                            filters = filters.toMutableList().also { it.removeAt(index) }
+                        }
+                    }
+                    Chip("＋ 条件を追加") { showFilter = true }
+                }
+
+                HorizontalDivider()
+                Surface(color = Surface2, shape = MaterialTheme.shapes.small) {
+                    Text(
+                        EffectTextRenderer.summonLockToText(build(), master) + "。",
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(10.dp)
+                    )
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = { onConfirm(build()) }) { Text("決定") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("キャンセル") } }
+    )
+
+    if (showFilter) {
+        FilterDialog(
+            master = master,
+            onDismiss = { showFilter = false },
+            onConfirm = {
+                filters = filters + it
+                showFilter = false
+            }
+        )
+    }
 }

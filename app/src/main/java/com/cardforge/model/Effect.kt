@@ -454,11 +454,32 @@ data class UsageLimit(
  * 場合分けの1項目。[conditions] を満たしたときに [actions] を処理する。
  * カードテキストでは「●条件：効果」として表示される。
  */
+/**
+ * 【制限】としての召喚の縛り。
+ *
+ * 効果ではなく発動そのものに付く制限なので、効果を無効にされても掛かったままになる。
+ * 掛かるのは発動したターンの間だけ。
+ *
+ * [except] が true なら「[filters] に当てはまるもの**以外**を出せない」、
+ * false なら「[filters] に当てはまるものを出せない」。
+ */
+@Serializable
+data class SummonLock(
+    val who: PlayerRef = PlayerRef.SELF,
+    val summon: SummonKind = SummonKind.SPECIAL,
+    val filters: List<CardFilter> = emptyList(),
+    val except: Boolean = true
+)
+
 @Serializable
 data class EffectBranch(
     val conditions: List<Condition> = emptyList(),
-    val actions: List<Action> = emptyList()
-)
+    val actions: List<Action> = emptyList(),
+    /** 「〜することができる」と書く処理の番号（[actions] の位置）。 */
+    val optionalSteps: List<Int> = emptyList()
+) {
+    fun isOptionalStep(index: Int): Boolean = index in optionalSteps
+}
 
 @Serializable
 data class EffectClause(
@@ -476,9 +497,20 @@ data class EffectClause(
     val limits: List<UsageLimit> = emptyList(),
     /** この効果だけの【発動後】。null ならカード共通の指定に従う。 */
     val afterActivation: AfterActivation? = null,
+    /**
+     * 誘発即時効果。相手のターンや、相手の行動への割り込みでも発動できる。
+     * 【場所】がフィールド以外の効果は、書かなくても割り込める。
+     */
+    val quick: Boolean = false,
+    /** 「〜することができる」と書く処理の番号（[actions] の位置）。 */
+    val optionalSteps: List<Int> = emptyList(),
+    /** この効果の発動に付く召喚の制限。 */
+    val summonLocks: List<SummonLock> = emptyList(),
     /** 旧データ互換。制限欄が空でこれが true なら「1ターンに1度」として扱う。 */
     val oncePerTurn: Boolean = false
-)
+) {
+    fun isOptionalStep(index: Int): Boolean = index in optionalSteps
+}
 
 /** 効果に、処理すべき内容があるか。 */
 val EffectClause.hasWork: Boolean
@@ -491,6 +523,8 @@ data class EffectText(
     val costs: List<Cost> = emptyList(),
     /** 全ての効果をまとめて数える制限。 */
     val limits: List<UsageLimit> = emptyList(),
+    /** どの効果を発動しても掛かる召喚の制限。 */
+    val summonLocks: List<SummonLock> = emptyList(),
     /** 【発動後】。null なら [AfterActivation.DEFAULT]（墓地へ送る）。 */
     val afterActivation: AfterActivation? = null,
     val clauses: List<EffectClause> = emptyList()
@@ -530,6 +564,13 @@ data class EffectText(
         return if (clause.oncePerTurn) listOf(UsageLimit(LimitScope.THIS_CARD, 1))
         else emptyList()
     }
+
+    /** [index] 番目の効果を発動したときに掛かる召喚の制限（共通指定を含む）。 */
+    fun summonLocksFor(index: Int): List<SummonLock> =
+        summonLocks + clauses.getOrNull(index)?.summonLocks.orEmpty()
+
+    /** [index] 番目の効果が誘発即時（相手ターンにも発動できる）か。 */
+    fun isQuick(index: Int): Boolean = clauses.getOrNull(index)?.quick == true
 
     /**
      * [index] 番目の効果の【発動後】。

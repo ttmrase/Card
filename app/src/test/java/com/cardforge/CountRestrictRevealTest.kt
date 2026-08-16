@@ -80,19 +80,17 @@ class CountRestrictRevealTest {
             categoryIds = listOf(valis),
             effect = EffectText(
                 locations = listOf(ActivationLocation.FIELD),
+                summonLocks = listOf(
+                    SummonLock(
+                        who = PlayerRef.SELF,
+                        summon = SummonKind.SPECIAL,
+                        filters = listOf(CategoryFilter(valis)),
+                        except = true
+                    )
+                ),
                 clauses = listOf(
                     EffectClause(
-                        mode = ActivationMode.ON_ACTIVATION,
-                        actions = listOf(
-                            RestrictSummonAction(
-                                who = PlayerRef.SELF,
-                                summon = SummonKind.SPECIAL,
-                                filters = listOf(CategoryFilter(valis)),
-                                except = true
-                            )
-                        )
-                    ),
-                    EffectClause(
+                        optionalSteps = listOf(2),
                         actions = listOf(
                             ToHandAction(
                                 CardScope(
@@ -383,7 +381,7 @@ class CountRestrictRevealTest {
         val text = EffectTextRenderer.render(herald().card, master)
         val lines = text.lines()
 
-        assertTrue(text, lines.any { it.contains("このカードを発動するターン") })
+        assertTrue(text, lines.any { it.startsWith("【制限】このカードを発動するターン") })
         assertTrue(
             text,
             lines.any { it.contains("「VALIS」モンスター以外のモンスターを特殊召喚できない") }
@@ -393,8 +391,8 @@ class CountRestrictRevealTest {
             text,
             lines.any { it.contains("自分の手札の「VALIS」魔法カードの数まで、") }
         )
-        // 制限は効果番号より前に、番号を付けずに書かれる。
         assertTrue(text, lines.none { it.startsWith("②") })
         assertTrue(text, lines.any { it.startsWith("①：自分のデッキの「VALIS」魔法カード") })
+        assertTrue(text, lines.any { it.contains("墓地へ送ることができる") })
     }
 }

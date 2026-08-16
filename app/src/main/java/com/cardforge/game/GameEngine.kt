@@ -59,12 +59,6 @@ class GameEngine(
     private val MAX_TRIGGER_DEPTH = 4
     private var responseDepth = 0
 
-    /**
-     * 応答（相手の行動に割り込む）の窓を開いている最中かどうか。
-     * この間は「自分のターンのメインフェイズだけ」という制限を緩める。
-     */
-    private var respondWindow = 0
-
     private fun log(message: String) = state.addLog(message)
 
     // =======================================================================
@@ -945,13 +939,7 @@ class GameEngine(
                 }
             }
 
-            is RestrictSummonAction -> {
-                val restriction = SummonRestriction(action.summon, action.filters, action.except)
-                playersFor(action.who, controller).forEach { player ->
-                    player.summonRestrictions.add(restriction)
-                    log("${player.name}はこのターン、${restrictionText(restriction)}。")
-                }
-            }
+            is RestrictSummonAction -> Unit // 【制限】へ移した。旧データのために残してある。
 
             is RevealAction -> reveal(action.scope, action.duration, controller, source)
 
@@ -1095,8 +1083,9 @@ class GameEngine(
         controller: PlayerState,
         source: CardInstance?
     ) {
-        for (action in clause.actions) {
+        for ((position, action) in clause.actions.withIndex()) {
             if (state.finished) return
+            if (!askOptionalStep(clause.isOptionalStep(position), action, controller)) continue
             applyAction(action, controller, source)
         }
         if (clause.branches.isEmpty() || state.finished) return
@@ -1125,11 +1114,26 @@ class GameEngine(
         }
 
         for (branch in applied) {
-            for (action in branch.actions) {
+            for ((position, action) in branch.actions.withIndex()) {
                 if (state.finished) return
+                if (!askOptionalStep(branch.isOptionalStep(position), action, controller)) continue
                 applyAction(action, controller, source)
             }
         }
+    }
+
+    /**
+     * 「〜することができる」と書かれた処理を行うか確認する。
+     * 強制の処理はそのまま true。
+     */
+    private suspend fun askOptionalStep(
+        optional: Boolean,
+        action: Action,
+        controller: PlayerState
+    ): Boolean {
+        if (!optional) return true
+        val what = EffectTextRenderer.actionToText(action, state.master)
+        return interaction.confirm(controller.index, "${what}か？（任意）")
     }
 
     /**
@@ -1144,14 +1148,22 @@ class GameEngine(
         source: CardInstance?
     ): Boolean {
         val consumed = mutableListOf<CardInstance>()
-        if (!canResolveActionList(clause.actions, controller, source, consumed)) return false
+        if (!canResolveActionList(
+                clause.actions, controller, source, consumed, clause.optionalSteps
+            )
+        ) {
+            return false
+        }
         if (clause.branches.isEmpty()) return true
 
         // 場合分けは、当てはまるもののうち処理しきれるものが1つでもあればよい。
         return clause.branches.any { branch ->
             branch.actions.isNotEmpty() &&
                 conditionsMet(branch.conditions, controller, source) &&
-                canResolveActionList(branch.actions, controller, source, consumed.toMutableList())
+                canResolveActionList(
+                    branch.actions, controller, source,
+                    consumed.toMutableList(), branch.optionalSteps
+                )
         }
     }
 
@@ -1159,9 +1171,12 @@ class GameEngine(
         actions: List<Action>,
         controller: PlayerState,
         source: CardInstance?,
-        consumed: MutableList<CardInstance>
+        consumed: MutableList<CardInstance>,
+        /** 「〜することができる」と書かれた処理の番号。足りなくても発動できる。 */
+        optionalSteps: List<Int> = emptyList()
     ): Boolean {
-        for (action in actions) {
+        for ((position, action) in actions.withIndex()) {
+            if (position in optionalSteps) continue
             val scope = scopeOf(action) ?: continue
             val pool = candidates(scope, controller, source).filter { card ->
                 consumed.none { it === card }
@@ -1188,31 +1203,31 @@ class GameEngine(
         val phases = effect.phasesFor(index)
         if (phases.isNotEmpty()) {
             if (state.phase !in phases) return false
-            if (respondsInWindow(inst, effect, index)) return true
+            if (isQuickEffect(inst, effect, index)) return true
             // 魔法とモンスターの効果は、フェイズを指定しても自分のターンのまま。
             if (inst.card.kind != CardKind.TRAP && state.turnPlayer !== controller) return false
             return true
         }
         if (inst.card.kind == CardKind.TRAP) return true
-        if (respondsInWindow(inst, effect, index)) return true
+        // 誘発即時効果は、どのフェイズでも、相手のターンでも発動できる。
+        if (isQuickEffect(inst, effect, index)) return true
         return state.phase.isMain && state.turnPlayer === controller
     }
 
     /**
-     * 応答の窓で、いま割り込めるか。
+     * 誘発即時効果（相手のターンや、相手の行動への割り込みでも発動できる効果）か。
      *
-     * 罠に加えて、【場所】にフィールド以外（手札・墓地・除外ゾーン）を書いた効果を
-     * 相手のターンでも使えるようにする。いわゆる手札誘発がこれにあたる。
-     * フィールドのカードの起動効果は、これまでどおり自分のターンのみ。
+     * 【誘発即時】に印を付けた効果のほか、【場所】にフィールド以外
+     * （手札・墓地・除外ゾーン）を書いた効果も、書かなくてもそう扱う。
+     * いわゆる手札誘発がこれにあたる。
      */
-    private fun respondsInWindow(
-        inst: CardInstance,
-        effect: EffectText,
-        index: Int
-    ): Boolean {
-        if (respondWindow <= 0) return false
+    fun isQuickEffect(inst: CardInstance, effect: EffectText, index: Int): Boolean {
         if (inst.card.kind == CardKind.TRAP) return true
-        return effectiveLocations(effect, index).any { it != ActivationLocation.FIELD }
+        if (effect.isQuick(index)) return true
+        // 手札誘発の形（手札・墓地・除外ゾーンから発動するモンスター効果）。
+        // 魔法カードは「自分のターンだけ」のままなので、印を付けたときだけ割り込める。
+        return inst.card.kind == CardKind.MONSTER &&
+            effectiveLocations(effect, index).any { it != ActivationLocation.FIELD }
     }
 
     // -----------------------------------------------------------------------
@@ -1383,6 +1398,17 @@ class GameEngine(
             }
         }
 
+        // 誘発即時効果は、相手のターンでも発動できる。
+        if (!isOwnTurn) {
+            val pool = controller.monsters.filter { !it.faceDown } +
+                controller.spellsAndTraps.filter { it.card.kind != CardKind.TRAP } +
+                controller.hand + controller.graveyard + controller.banished
+            result += pool.filter { inst ->
+                val effect = inst.card.effect ?: return@filter false
+                activatableClauses(inst, controller).any { isQuickEffect(inst, effect, it) }
+            }
+        }
+
         // 罠は伏せた次のターン以降なら、どちらのターンでも発動できる。
         result += controller.spellsAndTraps.filter { canActivateTrap(it, controller) }
         result += controller.spellsAndTraps.filter {
@@ -1480,6 +1506,7 @@ class GameEngine(
         }
 
         recordActivation(inst, CARD_ACTIVATION, controller)
+        applySummonLocks(effect.summonLocks, controller)
         emit(GameEvent(GameEventType.ACTIVATED, controller.index, inst))
 
         if (offerResponse(controller, "「${inst.card.name}」の発動")) {
@@ -1600,6 +1627,8 @@ class GameEngine(
         }
 
         recordActivation(inst, clauseIndex, controller)
+        // 【制限】の召喚制限は、発動した時点で掛かる（無効にされても残る）。
+        applySummonLocks(effect.summonLocksFor(clauseIndex), controller)
         emit(GameEvent(GameEventType.ACTIVATED, controller.index, inst))
 
         // 相手に応答（罠）の機会を与える。
@@ -1706,22 +1735,20 @@ class GameEngine(
      * （手札誘発や、墓地・除外ゾーンから発動する効果）が対象になる。
      */
     fun respondableCards(responder: PlayerState): List<CardInstance> {
-        respondWindow++
-        try {
-            val pool = responder.spellsAndTraps + responder.hand +
-                responder.monsters + responder.graveyard + responder.banished
+        val pool = responder.spellsAndTraps + responder.hand +
+            responder.monsters + responder.graveyard + responder.banished
 
-            return pool.filter { inst ->
-                // 裏側のカードは、セットした次のターン以降の罠だけが応答できる。
-                if (isOnField(inst) && inst.faceDown) {
-                    if (inst.card.kind != CardKind.TRAP) return@filter false
-                    if (inst.setOnTurn !in 0 until state.turn) return@filter false
-                }
-                activatableClauses(inst, responder).isNotEmpty() ||
-                    canActivateCardItself(inst, responder)
+        return pool.filter { inst ->
+            // 裏側のカードは、セットした次のターン以降の罠だけが応答できる。
+            if (isOnField(inst) && inst.faceDown) {
+                if (inst.card.kind != CardKind.TRAP) return@filter false
+                if (inst.setOnTurn !in 0 until state.turn) return@filter false
             }
-        } finally {
-            respondWindow--
+            val effect = inst.card.effect ?: return@filter false
+            val quick = activatableClauses(inst, responder).any {
+                isQuickEffect(inst, effect, it)
+            }
+            quick || canActivateCardItself(inst, responder)
         }
     }
 
@@ -1807,6 +1834,21 @@ class GameEngine(
     // =======================================================================
     // 召喚とセット
     // =======================================================================
+
+    /**
+     * 【制限】に書かれた召喚の制限を掛ける。
+     *
+     * 効果ではなく発動そのものに付く制限なので、効果を無効にされても掛かったまま。
+     */
+    private fun applySummonLocks(locks: List<SummonLock>, controller: PlayerState) {
+        for (lock in locks) {
+            val restriction = SummonRestriction(lock.summon, lock.filters, lock.except)
+            playersFor(lock.who, controller).forEach { player ->
+                player.summonRestrictions.add(restriction)
+                log("${player.name}はこのターン、${restrictionText(restriction)}。")
+            }
+        }
+    }
 
     /** ログや通知に出す、召喚制限の一文。 */
     private fun restrictionText(restriction: SummonRestriction): String {

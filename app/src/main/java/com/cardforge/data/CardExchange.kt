@@ -50,11 +50,13 @@ object IdRemapper {
         conditions = effect.conditions.map { remapCondition(it, m) },
         costs = effect.costs.map { remapCost(it, m) },
         limits = effect.limits.map { remapLimit(it, m) },
+        summonLocks = effect.summonLocks.map { remapLock(it, m) },
         clauses = effect.clauses.map { clause ->
             clause.copy(
                 conditions = clause.conditions.map { remapCondition(it, m) },
                 costs = clause.costs.map { remapCost(it, m) },
                 limits = clause.limits.map { remapLimit(it, m) },
+                summonLocks = clause.summonLocks.map { remapLock(it, m) },
                 actions = clause.actions.map { remapAction(it, m) },
                 branches = clause.branches.map { branch ->
                     branch.copy(
@@ -68,6 +70,9 @@ object IdRemapper {
 
     private fun remapLimit(limit: UsageLimit, m: Map<String, String>): UsageLimit =
         limit.copy(categoryId = limit.categoryId?.let { m[it] ?: it })
+
+    private fun remapLock(lock: SummonLock, m: Map<String, String>): SummonLock =
+        lock.copy(filters = lock.filters.map { remapFilter(it, m) })
 
     private fun remapScope(scope: CardScope, m: Map<String, String>): CardScope =
         scope.copy(
@@ -154,10 +159,12 @@ object IdRemapper {
             effect.conditions.forEach { collectCondition(it, ids) }
             effect.costs.forEach { collectCost(it, ids) }
             effect.limits.forEach { limit -> limit.categoryId?.let(ids::add) }
+            effect.summonLocks.forEach { collectFilters(it.filters, ids) }
             effect.clauses.forEach { clause ->
                 clause.conditions.forEach { collectCondition(it, ids) }
                 clause.costs.forEach { collectCost(it, ids) }
                 clause.limits.forEach { limit -> limit.categoryId?.let(ids::add) }
+                clause.summonLocks.forEach { collectFilters(it.filters, ids) }
                 clause.actions.forEach { collectAction(it, ids) }
                 clause.branches.forEach { branch ->
                     branch.conditions.forEach { collectCondition(it, ids) }
