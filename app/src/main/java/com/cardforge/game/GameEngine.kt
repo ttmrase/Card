@@ -65,6 +65,12 @@ class GameEngine(
         }
     }
 
+    /**
+     * 直前の処理で扱ったカード。
+     * 「破壊した数だけ」「同名カードを」のような、前の処理を受けた指定に使う。
+     */
+    private var lastAffected: List<CardInstance> = emptyList()
+
     /** 効果の処理が終わってから適用する、フェイズの進め方の変更。 */
     private var pendingAdvance: PhaseAdvance? = null
 
@@ -76,6 +82,9 @@ class GameEngine(
      * 解決の途中で同じカードをもう一度発動できてしまうのを防ぐ。
      */
     private val resolvingCards = mutableSetOf<String>()
+
+    /** 種類を指定しなかったカウンターの置き場。 */
+    private val DEFAULT_COUNTER = "counter"
 
     /** 効果が効果を呼ぶ連鎖の暴走を防ぐための深さ制限。 */
     private var triggerDepth = 0
@@ -154,6 +163,7 @@ class GameEngine(
         inst.attackLockedThisTurn = false
         inst.revealedUntilTurn = -1
         inst.summonedByUid = null
+        inst.counters.clear()
     }
 
     fun applyPosition(inst: CardInstance, position: Position) {
@@ -175,27 +185,68 @@ class GameEngine(
         }
     }
 
+    /**
+     * 墓地へ送る。
+     *
+     * トークンはゲームから取り除かれる。
+     * 「墓地へ送られる代わりに」の永続効果があれば、その行き先に差し替える。
+     */
     fun sendToGraveyard(inst: CardInstance) {
+        val replacement = replacedDestination(inst)
+        if (replacement != null) {
+            log("「${inst.card.name}」は墓地へ送られる代わりに${replacement.label}。")
+            moveForCost(inst, replacement)
+            return
+        }
         val loc = removeFromCurrent(inst) ?: return
         resetInstance(inst)
+        if (inst.card.isToken) {
+            log("トークン「${inst.card.name}」はゲームから取り除かれた。")
+            return
+        }
         loc.player.graveyard.add(inst)
     }
+
+    /** 「墓地へ送られる代わりに」の永続効果があれば、その行き先。 */
+    private fun replacedDestination(inst: CardInstance): MoveDestination? =
+        withoutRecursion<MoveDestination?>(null) {
+            activeContinuous().firstNotNullOfOrNull { (source, owner, clause) ->
+                clause.actions
+                    .filterIsInstance<ReplaceDestinationAction>()
+                    .firstOrNull { affects(it.scope, source, owner, inst) }
+                    ?.to
+            }
+            // 墓地へ送るへの差し替えは何も変わらないので無視する。
+            ?.takeIf { it != MoveDestination.GRAVEYARD }
+        }
 
     fun banish(inst: CardInstance) {
         val loc = removeFromCurrent(inst) ?: return
         resetInstance(inst)
+        if (inst.card.isToken) {
+            log("トークン「${inst.card.name}」はゲームから取り除かれた。")
+            return
+        }
         loc.player.banished.add(inst)
     }
 
     fun returnToHand(inst: CardInstance) {
         val loc = removeFromCurrent(inst) ?: return
         resetInstance(inst)
+        if (inst.card.isToken) {
+            log("トークン「${inst.card.name}」はゲームから取り除かれた。")
+            return
+        }
         loc.player.hand.add(inst)
     }
 
     fun returnToDeck(inst: CardInstance, toBottom: Boolean) {
         val loc = removeFromCurrent(inst) ?: return
         resetInstance(inst)
+        if (inst.card.isToken) {
+            log("トークン「${inst.card.name}」はゲームから取り除かれた。")
+            return
+        }
         if (toBottom) loc.player.deck.add(inst) else loc.player.deck.add(0, inst)
     }
 
@@ -349,14 +400,44 @@ class GameEngine(
         (inst.defValue + statBonus(inst, StatKind.DEF)).coerceAtLeast(0)
 
     /** [target] が [kind] の耐性を持っているか。そのターンだけの耐性も含む。 */
-    fun hasProtection(target: CardInstance, kind: ProtectionKind): Boolean {
+    /**
+     * [target] が [kind] の耐性を持っているか。
+     *
+     * [against] を渡すと「その相手の効果に対して」の耐性だけを見る。
+     * null なら誰の効果でも構わない。
+     */
+    fun hasProtection(
+        target: CardInstance,
+        kind: ProtectionKind,
+        against: PlayerState? = null
+    ): Boolean {
         if (kind in target.turnProtections) return true
+        val owner = locate(target)?.player
         return withoutRecursion(false) {
-            activeContinuous().any { (source, owner, clause) ->
+            activeContinuous().any { (source, ownerOfSource, clause) ->
                 clause.actions
                     .filterIsInstance<GrantProtectionAction>()
-                    .any { it.kind == kind && affects(it.scope, source, owner, target) }
+                    .any { protection ->
+                        protection.kind == kind &&
+                            affects(protection.scope, source, ownerOfSource, target) &&
+                            sideMatches(protection, owner, against)
+                    }
             }
+        }
+    }
+
+    /** 「自分の／相手の／お互いの効果を受けない」の判定。 */
+    private fun sideMatches(
+        protection: GrantProtectionAction,
+        owner: PlayerState?,
+        against: PlayerState?
+    ): Boolean {
+        if (!protection.kind.usesSide) return true
+        if (against == null || owner == null) return true
+        return when (protection.from) {
+            PlayerRef.BOTH -> true
+            PlayerRef.SELF -> against === owner
+            PlayerRef.OPPONENT -> against !== owner
         }
     }
 
@@ -373,11 +454,8 @@ class GameEngine(
     }
 
     /** 「相手の効果を受けない」カードは、相手の効果の対象に選べない。 */
-    private fun isUntouchableBy(target: CardInstance, actingPlayer: PlayerState): Boolean {
-        val owner = locate(target)?.player ?: return false
-        if (owner === actingPlayer) return false
-        return hasProtection(target, ProtectionKind.OPPONENT_EFFECTS)
-    }
+    private fun isUntouchableBy(target: CardInstance, actingPlayer: PlayerState): Boolean =
+        hasProtection(target, ProtectionKind.OPPONENT_EFFECTS, against = actingPlayer)
 
     // =======================================================================
     // 対象の絞り込み
@@ -397,7 +475,8 @@ class GameEngine(
     private fun needsCardInfo(filters: List<CardFilter>): Boolean = filters.any {
         it is AttributeFilter || it is RaceFilter || it is CategoryFilter ||
             it is LevelFilter || it is AtkFilter || it is DefFilter || it is NameFilter ||
-            (it is AnyFilter && needsCardInfo(it.filters))
+            (it is AnyFilter && needsCardInfo(it.filters)) ||
+            (it is NotFilter && needsCardInfo(listOf(it.filter)))
     }
 
     fun matches(inst: CardInstance, filter: CardFilter): Boolean = when (filter) {
@@ -421,6 +500,13 @@ class GameEngine(
         is SummonedByThisFilter -> true
         is AnyFilter ->
             filter.filters.isEmpty() || filter.filters.any { matches(inst, it) }
+
+        is NotFilter -> !matches(inst, filter.filter)
+
+        is AffectedNameFilter -> {
+            val names = lastAffected.map { it.card.name }.toSet()
+            if (filter.exclude) inst.card.name !in names else inst.card.name in names
+        }
     }
 
     fun matchesAll(
@@ -438,6 +524,8 @@ class GameEngine(
             // 「または」は、どれか1つに当てはまればよい。
             is AnyFilter -> filter.filters.isEmpty() ||
                 filter.filters.any { matchesAll(inst, listOf(it), source) }
+
+            is NotFilter -> !matchesAll(inst, listOf(filter.filter), source)
 
             else -> matches(inst, filter)
         }
@@ -457,7 +545,14 @@ class GameEngine(
         return playersFor(scope.who, controller)
             .flatMap { zoneCards(it, scope.zone) }
             .filter { !(hidesInfo && it.faceDown) }
+            // 「このカードを除く」。
+            .filter { !(scope.excludeSelf && it === source) }
             .filter { !(respectProtection && isUntouchableBy(it, controller)) }
+            // 「選んで」対象を取る指定では、対象にならない耐性を持つカードを外す。
+            .filter {
+                !(respectProtection && scope.selection == SelectionMode.CHOOSE &&
+                    hasProtection(it, ProtectionKind.NOT_TARGETED, against = controller))
+            }
             .filter { matchesAll(it, scope.filters, source) }
     }
 
@@ -518,6 +613,12 @@ class GameEngine(
         is CountValue ->
             spec.base + candidates(spec.scope, controller, source, respectProtection = false).size *
                 spec.multiplier
+
+        is AffectedCountValue -> spec.base + lastAffected.size * spec.multiplier
+
+        is CounterValue ->
+            spec.base + candidates(spec.scope, controller, source, respectProtection = false)
+                .sumOf { it.counterCount(spec.counterId) } * spec.multiplier
     }
 
     // =======================================================================
@@ -569,6 +670,12 @@ class GameEngine(
 
                 is PhaseCondition ->
                     condition.phases.isEmpty() || state.phase in condition.phases
+
+                is CounterCondition -> {
+                    val total = candidates(condition.scope, controller, holder, false)
+                        .sumOf { it.counterCount(condition.counterId ?: DEFAULT_COUNTER) }
+                    condition.cmp.test(total, condition.value)
+                }
 
                 is ZoneCountCondition -> playersFor(condition.who, controller).all {
                     condition.cmp.test(zoneCards(it, condition.zone).size, condition.value)
@@ -646,6 +753,12 @@ class GameEngine(
 
             // 見せるだけなので、いつでも払える。
             is RevealCost -> true
+
+            is CounterCost -> {
+                val key = cost.counterId ?: DEFAULT_COUNTER
+                candidates(cost.scope, controller, excluding, respectProtection = false)
+                    .sumOf { it.counterCount(key) } >= cost.amount
+            }
         }
     }
 
@@ -772,6 +885,26 @@ class GameEngine(
                 }
 
                 is RevealCost -> reveal(cost.scope, cost.duration, controller, excluding)
+
+                is CounterCost -> {
+                    val key = cost.counterId ?: DEFAULT_COUNTER
+                    var left = cost.amount
+                    val pool = candidates(cost.scope, controller, excluding, respectProtection = false)
+                    for (card in pool) {
+                        if (left <= 0) break
+                        val have = card.counterCount(key)
+                        if (have <= 0) continue
+                        val used = minOf(have, left)
+                        val rest = have - used
+                        if (rest == 0) card.counters.remove(key) else card.counters[key] = rest
+                        left -= used
+                    }
+                    if (left > 0) return false
+                    log(
+                        "${controller.name}はコストとして" +
+                            "${state.master.counterName(cost.counterId)}を${cost.amount}個取り除いた。"
+                    )
+                }
             }
         }
         return true
@@ -871,12 +1004,15 @@ class GameEngine(
         when (action) {
             is DestroyAction -> {
                 val targets = resolveTargets(action.scope, controller, "破壊するカードを選択", source)
+                // 「破壊した数だけ」「同名カードを」に使うので、扱った分を覚えておく。
+                lastAffected = targets
                 targets.forEach { destroy(it) }
                 shuffleIfDeck(action.scope, controller)
             }
 
             is BanishAction -> {
                 val targets = resolveTargets(action.scope, controller, "除外するカードを選択", source)
+                lastAffected = targets
                 targets.forEach {
                     val owner = locate(it)?.player?.index ?: controller.index
                     val leftField = isOnField(it)
@@ -890,6 +1026,7 @@ class GameEngine(
 
             is ToHandAction -> {
                 val targets = resolveTargets(action.scope, controller, "手札に加えるカードを選択", source)
+                lastAffected = targets
                 targets.forEach {
                     val owner = locate(it)?.player?.index ?: controller.index
                     val leftField = isOnField(it)
@@ -902,6 +1039,7 @@ class GameEngine(
 
             is ToGraveAction -> {
                 val targets = resolveTargets(action.scope, controller, "墓地へ送るカードを選択", source)
+                lastAffected = targets
                 targets.forEach {
                     val owner = locate(it)?.player?.index ?: controller.index
                     val leftField = isOnField(it)
@@ -915,6 +1053,7 @@ class GameEngine(
 
             is ToDeckAction -> {
                 val targets = resolveTargets(action.scope, controller, "デッキに戻すカードを選択", source)
+                lastAffected = targets
                 targets.forEach {
                     log("「${it.card.name}」をデッキに戻した。")
                     returnToDeck(it, action.toBottom)
@@ -926,9 +1065,14 @@ class GameEngine(
                 val destination = primaryPlayer(action.controller, controller)
                 val targets = resolveTargets(action.scope, controller, "特殊召喚するモンスターを選択", source)
                     .filter { it.card.kind == CardKind.MONSTER }
+                val summoned = mutableListOf<CardInstance>()
                 for (target in targets) {
                     if (!summonAllowed(target, destination, SummonKind.SPECIAL)) {
                         log("召喚の制限により「${target.card.name}」は特殊召喚できない。")
+                        continue
+                    }
+                    if (!specialSummonSourceAllowed(target, source)) {
+                        log("「${target.card.name}」はこの効果では特殊召喚できない。")
                         continue
                     }
                     val zone = destination.freeMonsterZones().firstOrNull()
@@ -954,12 +1098,14 @@ class GameEngine(
                     target.summonedOnTurn = state.turn
                     // 「このカードの効果によって特殊召喚された」の判定に使う。
                     target.summonedByUid = source?.uid
+                    summoned += target
                     log("${destination.name}は「${target.card.name}」を特殊召喚した。")
                     emit(
                         GameEvent(GameEventType.SPECIAL_SUMMONED, destination.index, target),
                         GameEvent(GameEventType.SUMMONED, destination.index, target)
                     )
                 }
+                lastAffected = summoned
                 shuffleIfDeck(action.scope, controller)
             }
 
@@ -1073,7 +1219,40 @@ class GameEngine(
             // 効果の付与は【発動タイプ】が「永続」のときだけ働く。
             is GrantEffectAction -> log("効果の付与は「永続」の効果に書いてください。")
 
-            is RitualSummonAction -> runRitualSummon(action, controller, source)
+            is MaterialSummonAction -> runMaterialSummon(action, controller, source)
+
+            is AddCounterAction -> {
+                val targets = resolveTargets(
+                    action.scope, controller, "カウンターを乗せるカードを選択", source
+                )
+                val name = state.master.counterName(action.counterId)
+                targets.forEach { target ->
+                    val key = action.counterId ?: DEFAULT_COUNTER
+                    target.counters[key] = target.counterCount(key) + action.amount
+                    log("「${target.card.name}」に${name}を${action.amount}個乗せた。")
+                }
+                lastAffected = targets
+            }
+
+            is RemoveCounterAction -> {
+                val targets = resolveTargets(
+                    action.scope, controller, "カウンターを取り除くカードを選択", source
+                )
+                val name = state.master.counterName(action.counterId)
+                targets.forEach { target ->
+                    val key = action.counterId ?: DEFAULT_COUNTER
+                    val left = (target.counterCount(key) - action.amount).coerceAtLeast(0)
+                    if (left == 0) target.counters.remove(key) else target.counters[key] = left
+                    log("「${target.card.name}」から${name}を取り除いた。")
+                }
+                lastAffected = targets
+            }
+
+            is CreateTokenAction -> runCreateToken(action, controller)
+
+            // 処理の差し替えは【発動タイプ】が「永続」のときだけ働く。
+            is ReplaceDestinationAction ->
+                log("処理の差し替えは「永続」の効果に書いてください。")
 
             is AdvancePhaseAction -> {
                 // 効果の処理の途中でフェイズを動かすと壊れるので、
@@ -1203,6 +1382,23 @@ class GameEngine(
         else -> null
     }
 
+    /**
+     * その指定が「直前の処理で扱ったカード」を見ているか。
+     *
+     * こういう指定は、発動する時点ではまだ結果が分からないので、
+     * 「最後まで処理できるか」の判定では見ない。
+     */
+    private fun dependsOnPreviousStep(scope: CardScope?): Boolean {
+        if (scope == null) return false
+        if (scope.countSpec is AffectedCountValue) return true
+        fun uses(filters: List<CardFilter>): Boolean = filters.any {
+            it is AffectedNameFilter ||
+                (it is AnyFilter && uses(it.filters)) ||
+                (it is NotFilter && uses(listOf(it.filter)))
+        }
+        return uses(scope.filters)
+    }
+
     /** その述語がカードを別の場所へ動かすか。 */
     private fun movesCards(action: Action): Boolean = when (action) {
         is DestroyAction, is BanishAction, is ToHandAction, is ToGraveAction,
@@ -1226,6 +1422,8 @@ class GameEngine(
         controller: PlayerState,
         source: CardInstance?
     ) {
+        // 「直前の処理で扱ったカード」は、効果ごとに数え直す。
+        lastAffected = emptyList()
         if (!runSteps(clause.actions, clause.optionalSteps, clause.linkedSteps, controller, source)) {
             return
         }
@@ -1350,9 +1548,11 @@ class GameEngine(
 
         for ((position, action) in actions.withIndex()) {
             if (position in skipped) continue
-            // 儀式召喚は、出すモンスターとリリースする組み合わせの両方を見る。
-            if (action is RitualSummonAction) {
-                if (!canRitualSummon(action, controller, source)) return false
+            // 前の処理の結果を見る指定は、発動時点では確かめようがないので飛ばす。
+            if (position > 0 && dependsOnPreviousStep(scopeOf(action))) continue
+            // 素材依存の特殊召喚は、出すモンスターと素材の組み合わせの両方を見る。
+            if (action is MaterialSummonAction) {
+                if (!canMaterialSummon(action, controller, source)) return false
                 continue
             }
             val scope = scopeOf(action) ?: continue
@@ -1936,21 +2136,21 @@ class GameEngine(
     // =======================================================================
 
     /** 儀式召喚で1体出すのに必要な数（レベルの合計、または体数）。 */
-    private fun ritualNeed(action: RitualSummonAction, target: CardInstance): Int =
+    private fun materialNeed(action: MaterialSummonAction, target: CardInstance): Int =
         when (action.requirement) {
-            RitualRequirement.COUNT -> action.count.coerceAtLeast(1)
+            MaterialRequirement.COUNT -> action.count.coerceAtLeast(1)
             else -> target.card.level.coerceAtLeast(1)
         }
 
     /** [pool] から [need] を満たす組み合わせが作れるか。 */
-    private fun canMeetRitual(
-        action: RitualSummonAction,
+    private fun canMeetMaterial(
+        action: MaterialSummonAction,
         pool: List<CardInstance>,
         need: Int
     ): Boolean = when (action.requirement) {
-        RitualRequirement.COUNT -> pool.size >= need
-        RitualRequirement.LEVEL_OR_MORE -> pool.sumOf { it.card.level } >= need
-        RitualRequirement.LEVEL_EXACT -> {
+        MaterialRequirement.COUNT -> pool.size >= need
+        MaterialRequirement.LEVEL_OR_MORE -> pool.sumOf { it.card.level } >= need
+        MaterialRequirement.LEVEL_EXACT -> {
             // ぴったり合う組み合わせがあるかを、小さな盤面向けに素直に調べる。
             val reachable = BooleanArray(need + 1).also { it[0] = true }
             for (card in pool) {
@@ -1965,8 +2165,8 @@ class GameEngine(
     }
 
     /** 儀式召喚できる状態か。発動できるかの判定に使う。 */
-    fun canRitualSummon(
-        action: RitualSummonAction,
+    fun canMaterialSummon(
+        action: MaterialSummonAction,
         controller: PlayerState,
         source: CardInstance?
     ): Boolean {
@@ -1976,17 +2176,17 @@ class GameEngine(
         return targets.any { target ->
             if (!summonAllowed(target, controller, SummonKind.SPECIAL)) return@any false
             val pool = candidates(action.material, controller, source).filter { it !== target }
-            canMeetRitual(action, pool, ritualNeed(action, target))
+            canMeetMaterial(action, pool, materialNeed(action, target))
         }
     }
 
-    private suspend fun runRitualSummon(
-        action: RitualSummonAction,
+    private suspend fun runMaterialSummon(
+        action: MaterialSummonAction,
         controller: PlayerState,
         source: CardInstance?
     ) {
         if (controller.freeMonsterZones().isEmpty()) {
-            log("モンスターゾーンに空きが無いため儀式召喚できない。")
+            log("モンスターゾーンに空きが無いため特殊召喚できない。")
             return
         }
         val targets = candidates(action.summon, controller, source)
@@ -1994,32 +2194,32 @@ class GameEngine(
             .filter { summonAllowed(it, controller, SummonKind.SPECIAL) }
             .filter { target ->
                 val pool = candidates(action.material, controller, source).filter { it !== target }
-                canMeetRitual(action, pool, ritualNeed(action, target))
+                canMeetMaterial(action, pool, materialNeed(action, target))
             }
         if (targets.isEmpty()) {
-            log("儀式召喚できるモンスターがいない。")
+            log("特殊召喚できるモンスターがいない。")
             return
         }
 
         val target = interaction
-            .chooseCards(controller.index, "儀式召喚するモンスターを選択", targets, 1, 1)
+            .chooseCards(controller.index, "特殊召喚するモンスターを選択", targets, 1, 1)
             .firstOrNull() ?: return
 
-        val need = ritualNeed(action, target)
+        val need = materialNeed(action, target)
         val chosen = mutableListOf<CardInstance>()
         var remaining = candidates(action.material, controller, source).filter { it !== target }
 
         // 条件を満たすまで1体ずつ選ばせる。AI もこの形なら順に選べる。
         var guard = 0
-        while (guard++ < 12 && !meetsRitual(action, chosen, need)) {
+        while (guard++ < 12 && !meetsMaterial(action, chosen, need)) {
             if (remaining.isEmpty()) break
             val label = when (action.requirement) {
-                RitualRequirement.COUNT ->
-                    "リリースするモンスターを選択（あと${need - chosen.size}体）"
+                MaterialRequirement.COUNT ->
+                    "素材にするカードを選択（あと${need - chosen.size}枚）"
 
                 else -> {
                     val short = need - chosen.sumOf { it.card.level }
-                    "リリースするモンスターを選択（レベル合計あと$short）"
+                    "素材にするカードを選択（レベル合計あと$short）"
                 }
             }
             val picked = interaction
@@ -2029,20 +2229,20 @@ class GameEngine(
             remaining = remaining.filter { it !== picked }
         }
 
-        if (!meetsRitual(action, chosen, need)) {
-            log("リリースする条件を満たせなかったため儀式召喚できない。")
+        if (!meetsMaterial(action, chosen, need)) {
+            log("素材の条件を満たせなかったため特殊召喚できない。")
             return
         }
 
         chosen.forEach { moveForCost(it, action.destination) }
         log(
             "${controller.name}は${chosen.size}体を${action.destination.label}、" +
-                "「${target.card.name}」を儀式召喚した。"
+                "「${target.card.name}」を特殊召喚した。"
         )
 
         val zone = controller.freeMonsterZones().firstOrNull()
         if (zone == null) {
-            log("モンスターゾーンに空きが無いため儀式召喚できない。")
+            log("モンスターゾーンに空きが無いため特殊召喚できない。")
             return
         }
         val choices = action.choices
@@ -2069,14 +2269,60 @@ class GameEngine(
         )
     }
 
-    private fun meetsRitual(
-        action: RitualSummonAction,
+    /** トークンを特殊召喚する。 */
+    private suspend fun runCreateToken(action: CreateTokenAction, controller: PlayerState) {
+        val def = state.tokenDefs.firstOrNull { it.id == action.tokenCardId }
+        if (def == null) {
+            log("出すトークンが見つからない。")
+            return
+        }
+        val destination = primaryPlayer(action.controller, controller)
+        val created = mutableListOf<CardInstance>()
+        repeat(action.count.coerceAtLeast(1)) {
+            val zone = destination.freeMonsterZones().firstOrNull()
+            if (zone == null) {
+                log("モンスターゾーンに空きが無いためトークンを出せない。")
+                return@repeat
+            }
+            val token = CardInstance(newId(), def)
+            if (!summonAllowed(token, destination, SummonKind.SPECIAL)) {
+                log("召喚の制限によりトークンを出せない。")
+                return@repeat
+            }
+            destination.monsterZones[zone] = token
+            val choices = action.choices
+            val position = if (choices.size <= 1) {
+                choices.first()
+            } else {
+                val picked = interaction.chooseOption(
+                    controller.index,
+                    "「${def.name}」を出す表示形式を選択",
+                    choices.map { it.label }
+                )
+                choices[picked.coerceIn(choices.indices)]
+            }
+            applyPosition(token, position)
+            token.summonedOnTurn = state.turn
+            created += token
+            log("${destination.name}は「${def.name}」を特殊召喚した。")
+        }
+        lastAffected = created
+        created.forEach {
+            emit(
+                GameEvent(GameEventType.SPECIAL_SUMMONED, destination.index, it),
+                GameEvent(GameEventType.SUMMONED, destination.index, it)
+            )
+        }
+    }
+
+    private fun meetsMaterial(
+        action: MaterialSummonAction,
         chosen: List<CardInstance>,
         need: Int
     ): Boolean = when (action.requirement) {
-        RitualRequirement.COUNT -> chosen.size >= need
-        RitualRequirement.LEVEL_OR_MORE -> chosen.sumOf { it.card.level } >= need
-        RitualRequirement.LEVEL_EXACT -> chosen.sumOf { it.card.level } == need
+        MaterialRequirement.COUNT -> chosen.size >= need
+        MaterialRequirement.LEVEL_OR_MORE -> chosen.sumOf { it.card.level } >= need
+        MaterialRequirement.LEVEL_EXACT -> chosen.sumOf { it.card.level } == need
     }
 
     /**
@@ -2293,6 +2539,17 @@ class GameEngine(
     }
 
     /** [inst] を [kind] の方法で出せるか。掛かっている召喚制限を見る。 */
+    /**
+     * 「〜の効果によってのみ特殊召喚できる」を満たしているか。
+     * [by] はそのカードを出そうとしている効果の持ち主。
+     */
+    fun specialSummonSourceAllowed(inst: CardInstance, by: CardInstance?): Boolean {
+        val required = inst.card.specialSummonOnlyBy
+        if (required.isEmpty()) return true
+        val from = by ?: return false
+        return matchesAll(from, required)
+    }
+
     fun summonAllowed(
         inst: CardInstance,
         controller: PlayerState,
@@ -2307,6 +2564,8 @@ class GameEngine(
 
     fun canNormalSummon(inst: CardInstance, controller: PlayerState): Boolean {
         if (inst.card.kind != CardKind.MONSTER) return false
+        // トークンと「通常召喚できない」カードは通常召喚できない。
+        if (inst.card.isToken || inst.card.cannotNormalSummon) return false
         if (state.turnPlayer !== controller) return false
         if (!summonAllowed(inst, controller, SummonKind.NORMAL)) return false
         if (state.phase != Phase.MAIN1 && state.phase != Phase.MAIN2) return false

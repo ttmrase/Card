@@ -16,7 +16,9 @@ data class NamedEntry(
 data class MasterData(
     val attributes: List<NamedEntry> = emptyList(),
     val races: List<NamedEntry> = emptyList(),
-    val categories: List<NamedEntry> = emptyList()
+    val categories: List<NamedEntry> = emptyList(),
+    /** 「魔力カウンター」のような、カードに乗せるカウンターの種類。 */
+    val counters: List<NamedEntry> = emptyList()
 ) {
     fun attributeName(id: String?): String =
         attributes.firstOrNull { it.id == id }?.name ?: "－"
@@ -26,6 +28,9 @@ data class MasterData(
 
     fun categoryName(id: String?): String =
         categories.firstOrNull { it.id == id }?.name ?: "－"
+
+    fun counterName(id: String?): String =
+        counters.firstOrNull { it.id == id }?.name ?: "カウンター"
 }
 
 @Serializable
@@ -48,6 +53,20 @@ data class CardDef(
      * 設定されているとカードにはこちらが表示される（動作は効果データのまま）。
      */
     val textOverride: String? = null,
+    /**
+     * トークンかどうか。
+     *
+     * トークンはデッキに入れられず、効果でしか出てこない。
+     * モンスターゾーンを離れるとゲームから取り除かれる。
+     */
+    val isToken: Boolean = false,
+    /** 「通常召喚できない」カード。 */
+    val cannotNormalSummon: Boolean = false,
+    /**
+     * 「〜の効果によってのみ特殊召喚できる」。
+     * 空なら特殊召喚のしかたを問わない。
+     */
+    val specialSummonOnlyBy: List<CardFilter> = emptyList(),
     /** null または空 = 効果を持たないカード。 */
     val effect: EffectText? = null,
     /** 旧データ互換。読み込み時に永続の効果へ変換される。 */

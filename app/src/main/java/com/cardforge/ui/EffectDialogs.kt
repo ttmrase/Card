@@ -38,7 +38,11 @@ private enum class ActionType(val label: String, val usesScope: Boolean) {
     PREVENT_ATTACK("攻撃できなくする（永続向き）", true),
     GRANT_EFFECT("効果を与える（永続向き）", true),
     ADVANCE_PHASE("フェイズ・ターンを進める", false),
-    RITUAL_SUMMON("儀式召喚する（リリースして特殊召喚）", false),
+    MATERIAL_SUMMON("素材を送って特殊召喚する（儀式・融合など）", false),
+    CREATE_TOKEN("トークンを特殊召喚する", false),
+    ADD_COUNTER("カウンターを乗せる", true),
+    REMOVE_COUNTER("カウンターを取り除く", true),
+    REPLACE_DESTINATION("墓地へ送られる代わりに（永続向き）", true),
     REVEAL("カードを相手に見せる（公開する）", true),
     NEGATE("発動を無効にし破壊する", false)
 }
@@ -64,7 +68,11 @@ private fun typeOf(action: Action): ActionType = when (action) {
     is PreventAttackAction -> ActionType.PREVENT_ATTACK
     is GrantEffectAction -> ActionType.GRANT_EFFECT
     is AdvancePhaseAction -> ActionType.ADVANCE_PHASE
-    is RitualSummonAction -> ActionType.RITUAL_SUMMON
+    is MaterialSummonAction -> ActionType.MATERIAL_SUMMON
+    is CreateTokenAction -> ActionType.CREATE_TOKEN
+    is AddCounterAction -> ActionType.ADD_COUNTER
+    is RemoveCounterAction -> ActionType.REMOVE_COUNTER
+    is ReplaceDestinationAction -> ActionType.REPLACE_DESTINATION
     // 旧データ用。編集画面では【制限】として扱う。
     is RestrictSummonAction -> ActionType.NEGATE
     is RevealAction -> ActionType.REVEAL
@@ -87,6 +95,9 @@ private fun scopeOf(action: Action): CardScope? = when (action) {
     is PreventAttackAction -> action.scope
     is GrantEffectAction -> action.scope
     is RevealAction -> action.scope
+    is AddCounterAction -> action.scope
+    is RemoveCounterAction -> action.scope
+    is ReplaceDestinationAction -> action.scope
     else -> null
 }
 
@@ -97,6 +108,8 @@ private fun scopeOf(action: Action): CardScope? = when (action) {
 fun ActionDialog(
     initial: Action?,
     master: MasterData,
+    /** 「トークンを特殊召喚する」で選べるトークンのカード。 */
+    tokenCards: List<CardDef> = emptyList(),
     onDismiss: () -> Unit,
     onConfirm: (Action) -> Unit
 ) {
@@ -181,8 +194,37 @@ fun ActionDialog(
     var advance by remember {
         mutableStateOf((initial as? AdvancePhaseAction)?.kind ?: PhaseAdvance.SKIP_PHASE)
     }
-    var ritual by remember {
-        mutableStateOf((initial as? RitualSummonAction) ?: RitualSummonAction())
+    var material by remember {
+        mutableStateOf((initial as? MaterialSummonAction) ?: MaterialSummonAction())
+    }
+    var counterId by remember {
+        mutableStateOf(
+            when (initial) {
+                is AddCounterAction -> initial.counterId
+                is RemoveCounterAction -> initial.counterId
+                else -> null
+            } ?: master.counters.firstOrNull()?.id
+        )
+    }
+    var counterAmount by remember {
+        mutableIntStateOf(
+            when (initial) {
+                is AddCounterAction -> initial.amount
+                is RemoveCounterAction -> initial.amount
+                else -> 1
+            }
+        )
+    }
+    var tokenId by remember { mutableStateOf((initial as? CreateTokenAction)?.tokenCardId) }
+    var tokenCount by remember { mutableIntStateOf((initial as? CreateTokenAction)?.count ?: 1) }
+    var tokenPositions by remember {
+        mutableStateOf((initial as? CreateTokenAction)?.choices ?: listOf(Position.ATTACK))
+    }
+    var replaceTo by remember {
+        mutableStateOf((initial as? ReplaceDestinationAction)?.to ?: MoveDestination.BANISHED)
+    }
+    var protectionFrom by remember {
+        mutableStateOf((initial as? GrantProtectionAction)?.from ?: PlayerRef.OPPONENT)
     }
     var showGrantedAction by remember { mutableStateOf<Int?>(null) }
     var addingGrantedAction by remember { mutableStateOf(false) }
@@ -219,11 +261,15 @@ fun ActionDialog(
         ActionType.SET_SPELL_TRAP -> SetSpellTrapAction(scope)
         ActionType.PLACE_SPELL_TRAP -> PlaceSpellTrapAction(scope)
         ActionType.ACTIVATE_CARD -> ActivateCardAction(scope)
-        ActionType.GRANT_PROTECTION -> GrantProtectionAction(scope, protection)
+        ActionType.GRANT_PROTECTION -> GrantProtectionAction(scope, protection, protectionFrom)
         ActionType.PREVENT_ATTACK -> PreventAttackAction(scope)
         ActionType.GRANT_EFFECT -> GrantEffectAction(scope, granted)
         ActionType.ADVANCE_PHASE -> AdvancePhaseAction(advance)
-        ActionType.RITUAL_SUMMON -> ritual
+        ActionType.MATERIAL_SUMMON -> material
+        ActionType.CREATE_TOKEN -> CreateTokenAction(tokenId, tokenCount, who, tokenPositions)
+        ActionType.ADD_COUNTER -> AddCounterAction(scope, counterId, counterAmount)
+        ActionType.REMOVE_COUNTER -> RemoveCounterAction(scope, counterId, counterAmount)
+        ActionType.REPLACE_DESTINATION -> ReplaceDestinationAction(scope, replaceTo)
         ActionType.REVEAL -> RevealAction(scope, revealDuration)
         ActionType.NEGATE -> NegateAction
     }
@@ -330,6 +376,11 @@ fun ActionDialog(
                         Dropdown("与える耐性", ProtectionKind.all, protection, { it.label }) {
                             protection = it
                         }
+                        if (protection.usesSide) {
+                            Dropdown(
+                                "誰の効果に対する耐性か", PlayerRef.all, protectionFrom, { it.label }
+                            ) { protectionFrom = it }
+                        }
                         Text(
                             "【発動タイプ】を「永続」にすると常に適用され、" +
                                 "発動する効果に書くとそのターンの間だけ適用されます。",
@@ -366,6 +417,13 @@ fun ActionDialog(
                             granted.mode,
                             { it.label }
                         ) { granted = granted.copy(mode = it) }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(
+                                checked = granted.quick,
+                                onCheckedChange = { granted = granted.copy(quick = it) }
+                            )
+                            Text("与える効果を誘発即時にする")
+                        }
 
                         Text(
                             "与える効果の中身",
@@ -404,11 +462,11 @@ fun ActionDialog(
                         Chip("＋ 与える効果の文を追加") { addingGrantedAction = true }
                     }
 
-                    ActionType.RITUAL_SUMMON -> {
+                    ActionType.MATERIAL_SUMMON -> {
                         HorizontalDivider()
                         Text(
-                            "遊戯王の儀式召喚と同じ形です。" +
-                                "リリースするモンスターの条件を満たせないと発動できません。",
+                            "遊戯王の儀式召喚や融合召喚のように、素材を送って特殊召喚します。" +
+                                "素材の条件を満たせないと発動できません。",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -418,34 +476,34 @@ fun ActionDialog(
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                        CardScopeEditor(ritual.summon, master) {
-                            ritual = ritual.copy(summon = it)
+                        CardScopeEditor(material.summon, master) {
+                            material = material.copy(summon = it)
                         }
 
                         HorizontalDivider()
                         Text(
-                            "リリースするモンスター（どこから・どんなカード）",
+                            "素材にするカード（どこから・どんなカード）",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                        CardScopeEditor(ritual.material, master, showCount = false) {
-                            ritual = ritual.copy(material = it)
+                        CardScopeEditor(material.material, master, showCount = false) {
+                            material = material.copy(material = it)
                         }
                         Dropdown(
-                            "リリースしたカードの行き先",
+                            "素材の行き先",
                             MoveDestination.all,
-                            ritual.destination,
+                            material.destination,
                             { it.label }
-                        ) { ritual = ritual.copy(destination = it) }
+                        ) { material = material.copy(destination = it) }
                         Dropdown(
-                            "リリースに求める条件",
-                            RitualRequirement.all,
-                            ritual.requirement,
+                            "素材に求める条件",
+                            MaterialRequirement.all,
+                            material.requirement,
                             { it.label }
-                        ) { ritual = ritual.copy(requirement = it) }
-                        if (ritual.requirement == RitualRequirement.COUNT) {
-                            NumberField("必要な体数", ritual.count) {
-                                ritual = ritual.copy(count = it.coerceIn(1, 9))
+                        ) { material = material.copy(requirement = it) }
+                        if (material.requirement == MaterialRequirement.COUNT) {
+                            NumberField("必要な枚数", material.count) {
+                                material = material.copy(count = it.coerceIn(1, 9))
                             }
                         }
 
@@ -456,9 +514,9 @@ fun ActionDialog(
                         )
                         FlowRowSimple {
                             Position.all.forEach { candidate ->
-                                Chip(candidate.label, selected = candidate in ritual.choices) {
-                                    val current = ritual.choices
-                                    ritual = ritual.copy(
+                                Chip(candidate.label, selected = candidate in material.choices) {
+                                    val current = material.choices
+                                    material = material.copy(
                                         positionChoices =
                                             if (candidate in current) {
                                                 (current - candidate).ifEmpty { listOf(candidate) }
@@ -469,6 +527,66 @@ fun ActionDialog(
                                 }
                             }
                         }
+                    }
+
+                    ActionType.ADD_COUNTER, ActionType.REMOVE_COUNTER -> {
+                        HorizontalDivider()
+                        CounterPicker(master, counterId) { counterId = it }
+                        NumberField("個数", counterAmount) {
+                            counterAmount = it.coerceIn(1, 20)
+                        }
+                    }
+
+                    ActionType.CREATE_TOKEN -> {
+                        HorizontalDivider()
+                        Dropdown("出す側", PlayerRef.all, who, { it.label }) { who = it }
+                        if (tokenCards.isEmpty()) {
+                            Text(
+                                "トークンのカードがまだありません。" +
+                                    "カード作成画面で「トークン」を付けたカードを作ってください。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        } else {
+                            Dropdown(
+                                "出すトークン",
+                                tokenCards,
+                                tokenCards.firstOrNull { it.id == tokenId },
+                                { it.name }
+                            ) { tokenId = it.id }
+                        }
+                        NumberField("体数", tokenCount) { tokenCount = it.coerceIn(1, 5) }
+                        Text(
+                            "選べる表示形式",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        FlowRowSimple {
+                            Position.all.forEach { candidate ->
+                                Chip(candidate.label, selected = candidate in tokenPositions) {
+                                    tokenPositions =
+                                        if (candidate in tokenPositions) {
+                                            (tokenPositions - candidate)
+                                                .ifEmpty { listOf(candidate) }
+                                        } else {
+                                            tokenPositions + candidate
+                                        }
+                                }
+                            }
+                        }
+                    }
+
+                    ActionType.REPLACE_DESTINATION -> {
+                        HorizontalDivider()
+                        Dropdown(
+                            "墓地へ送られる代わりに", MoveDestination.all, replaceTo, { it.label }
+                        ) { replaceTo = it }
+                        Text(
+                            "【発動タイプ】を「永続」にした効果に書いてください。" +
+                                "上で指定したカードが墓地へ送られるとき、行き先が差し替わります。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
 
                     ActionType.ADVANCE_PHASE -> {
@@ -529,6 +647,7 @@ fun ActionDialog(
         ActionDialog(
             initial = position?.let { granted.actions.getOrNull(it) },
             master = master,
+            tokenCards = tokenCards,
             onDismiss = {
                 addingGrantedAction = false
                 showGrantedAction = null
@@ -556,6 +675,7 @@ private enum class ConditionType(val label: String) {
     EXISTS("特定のカードが存在する"),
     LIFE("ライフが一定値である"),
     ZONE_COUNT("領域の枚数が一定値である"),
+    COUNTER("カウンターが乗っている"),
     ANY_OF("いずれかを満たす（または）")
 }
 
@@ -576,6 +696,7 @@ fun ConditionDialog(
                 is LifeCondition -> ConditionType.LIFE
                 is ZoneCountCondition -> ConditionType.ZONE_COUNT
                 is AnyOfCondition -> ConditionType.ANY_OF
+                is CounterCondition -> ConditionType.COUNTER
                 null -> ConditionType.EVENT
             }
         )
@@ -611,6 +732,16 @@ fun ConditionDialog(
     var anyOf by remember {
         mutableStateOf((initial as? AnyOfCondition)?.conditions ?: emptyList())
     }
+    var counterScope by remember {
+        mutableStateOf((initial as? CounterCondition)?.scope ?: CardScope(selfOnly = true))
+    }
+    var counterId by remember {
+        mutableStateOf(
+            (initial as? CounterCondition)?.counterId ?: master.counters.firstOrNull()?.id
+        )
+    }
+    var counterValue by remember { mutableIntStateOf((initial as? CounterCondition)?.value ?: 1) }
+    var counterCmp by remember { mutableStateOf((initial as? CounterCondition)?.cmp ?: Cmp.GE) }
     var editingAnyOf by remember { mutableStateOf<Int?>(null) }
     var addingAnyOf by remember { mutableStateOf(false) }
     var showEventFilter by remember { mutableStateOf(false) }
@@ -663,6 +794,8 @@ fun ConditionDialog(
         )
 
         ConditionType.ANY_OF -> AnyOfCondition(anyOf)
+        ConditionType.COUNTER ->
+            CounterCondition(counterScope, counterId, counterCmp, counterValue)
 
         ConditionType.SELF_ZONE -> SelfZoneCondition(selfZones)
         ConditionType.PHASE -> PhaseCondition(phases)
@@ -755,6 +888,16 @@ fun ConditionDialog(
                                 }
                             }
                         }
+                    }
+
+                    ConditionType.COUNTER -> {
+                        HorizontalDivider()
+                        CardScopeEditor(counterScope, master, showCount = false) {
+                            counterScope = it
+                        }
+                        CounterPicker(master, counterId) { counterId = it }
+                        NumberField("個数", counterValue) { counterValue = it.coerceAtLeast(0) }
+                        Dropdown("比較", Cmp.all, counterCmp, { it.label }) { counterCmp = it }
                     }
 
                     ConditionType.ANY_OF -> {
@@ -925,7 +1068,8 @@ private enum class CostType(val label: String) {
     SELF_TO_GRAVE("このカードを墓地へ送る"),
     SELF_BANISH("このカードを除外する"),
     MILL("自分のデッキから墓地へ送る"),
-    REVEAL("カードを相手に見せる（公開する）")
+    REVEAL("カードを相手に見せる（公開する）"),
+    COUNTER("カウンターを取り除く")
 }
 
 @Composable
@@ -945,6 +1089,7 @@ fun CostDialog(
 
                 is MillCost -> CostType.MILL
                 is RevealCost -> CostType.REVEAL
+                is CounterCost -> CostType.COUNTER
                 else -> CostType.MOVE
             }
         )
@@ -966,6 +1111,13 @@ fun CostDialog(
     var revealDuration by remember {
         mutableStateOf((initial as? RevealCost)?.duration ?: RevealDuration.MOMENT)
     }
+    var counterScope by remember {
+        mutableStateOf((initial as? CounterCost)?.scope ?: CardScope(selfOnly = true))
+    }
+    var counterId by remember {
+        mutableStateOf((initial as? CounterCost)?.counterId ?: master.counters.firstOrNull()?.id)
+    }
+    var counterAmount by remember { mutableIntStateOf((initial as? CounterCost)?.amount ?: 1) }
 
     fun build(): Cost = when (type) {
         CostType.MOVE -> MoveCost(scope, destination)
@@ -974,6 +1126,7 @@ fun CostDialog(
         CostType.SELF_BANISH -> DiscardSelfCost(banish = true)
         CostType.MILL -> MillCost(count.coerceAtLeast(1))
         CostType.REVEAL -> RevealCost(revealScope, revealDuration)
+        CostType.COUNTER -> CounterCost(counterScope, counterId, counterAmount)
     }
 
     AlertDialog(
@@ -1012,6 +1165,17 @@ fun CostDialog(
                         Dropdown(
                             "見せ方", RevealDuration.all, revealDuration, { it.label }
                         ) { revealDuration = it }
+                    }
+
+                    CostType.COUNTER -> {
+                        HorizontalDivider()
+                        CardScopeEditor(counterScope, master, showCount = false) {
+                            counterScope = it
+                        }
+                        CounterPicker(master, counterId) { counterId = it }
+                        NumberField("取り除く個数", counterAmount) {
+                            counterAmount = it.coerceIn(1, 20)
+                        }
                     }
 
                     CostType.SELF_TO_GRAVE, CostType.SELF_BANISH -> Text(
@@ -1237,4 +1401,28 @@ fun SummonLockDialog(
             }
         )
     }
+}
+
+/** カウンターの種類を選ぶ。まだ作っていない場合は案内を出す。 */
+@Composable
+fun CounterPicker(
+    master: MasterData,
+    selected: String?,
+    onSelect: (String?) -> Unit
+) {
+    if (master.counters.isEmpty()) {
+        Text(
+            "カウンターの種類がまだありません。" +
+                "「属性・種族・カテゴリ」の画面で追加できます。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.error
+        )
+        return
+    }
+    Dropdown(
+        "カウンターの種類",
+        master.counters,
+        master.counters.firstOrNull { it.id == selected },
+        { it.name }
+    ) { onSelect(it.id) }
 }

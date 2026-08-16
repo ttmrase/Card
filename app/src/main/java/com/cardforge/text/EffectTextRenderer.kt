@@ -60,6 +60,12 @@ object EffectTextRenderer {
 
         val sb = StringBuilder()
 
+        filters.filterIsInstance<NotFilter>().forEach {
+            sb.append(filtersToNoun(listOf(it.filter), master) + "以外の")
+        }
+        filters.filterIsInstance<AffectedNameFilter>().forEach {
+            sb.append(if (it.exclude) "直前に扱ったカードと同名でない" else "直前に扱ったカードと同名の")
+        }
         filters.filterIsInstance<SummonedByThisFilter>().forEach {
             sb.append(if (it.enabled) "このカードの効果によって特殊召喚された" else "それ以外の")
         }
@@ -128,6 +134,7 @@ object EffectTextRenderer {
     private fun countSpecToText(spec: ValueSpec, master: MasterData): String = when (spec) {
         is FixedValue -> spec.value.toString()
         is CountValue -> countSourceToText(spec, master) + "だけ"
+        else -> valueToText(spec, master) + "だけ"
     }
 
     /** 「を選んで」「をランダムに」など、対象と述語をつなぐ部分。 */
@@ -174,18 +181,33 @@ object EffectTextRenderer {
         return "$what$tail"
     }
 
-    /** 儀式召喚の文。 */
-    fun ritualToText(action: RitualSummonAction, master: MasterData): String {
+    /** 素材を送って特殊召喚する文。 */
+    fun materialSummonToText(action: MaterialSummonAction, master: MasterData): String {
         val target = scopeToText(action.summon, master)
         val material = scopeToText(action.material, master, withCount = false)
         val how = when (action.requirement) {
-            RitualRequirement.LEVEL_EXACT -> "レベルの合計がそのモンスターのレベルとぴったり同じになるように"
-            RitualRequirement.LEVEL_OR_MORE -> "レベルの合計がそのモンスターのレベル以上になるように"
-            RitualRequirement.COUNT -> "${action.count.coerceAtLeast(1)}体"
+            MaterialRequirement.LEVEL_EXACT ->
+                "レベルの合計がそのモンスターのレベルとぴったり同じになるように"
+
+            MaterialRequirement.LEVEL_OR_MORE ->
+                "レベルの合計がそのモンスターのレベル以上になるように"
+
+            MaterialRequirement.COUNT -> "${action.count.coerceAtLeast(1)}枚"
         }
         val positions = action.choices.joinToString("または") { it.label }
         return "${target}を、${material}を${how}${action.destination.label}ことで、" +
             "${positions}で特殊召喚する"
+    }
+
+    /** 「相手の効果を受けない」のように、誰の効果に対する耐性かを書く。 */
+    fun protectionLabel(action: GrantProtectionAction): String {
+        if (!action.kind.usesSide) return action.kind.label
+        val side = when (action.from) {
+            PlayerRef.BOTH -> "お互いの"
+            PlayerRef.SELF -> "自分の"
+            PlayerRef.OPPONENT -> "相手の"
+        }
+        return side + action.kind.label
     }
 
     /** 「〜は次の効果を得る」という文。 */
@@ -219,9 +241,27 @@ object EffectTextRenderer {
     fun actionToText(action: Action, master: MasterData): String = when (action) {
         is GrantEffectAction -> grantEffectToText(action, master)
 
+        is AddCounterAction ->
+            scopeToText(action.scope, master) + selectionParticle(action.scope) +
+                "${master.counterName(action.counterId)}を${action.amount}個乗せる"
+
+        is RemoveCounterAction ->
+            scopeToText(action.scope, master) + "から" +
+                "${master.counterName(action.counterId)}を${action.amount}個取り除く"
+
+        is CreateTokenAction -> {
+            val positions = action.choices.joinToString("または") { it.label }
+            "${action.controller.label}のモンスターゾーンにトークン${action.count}体を" +
+                "${positions}で特殊召喚する"
+        }
+
+        is ReplaceDestinationAction ->
+            scopeToText(action.scope, master, withCount = false) +
+                "が墓地へ送られる場合、代わりに${action.to.label}"
+
         is AdvancePhaseAction -> action.kind.label.removeSuffix("する") + "する"
 
-        is RitualSummonAction -> ritualToText(action, master)
+        is MaterialSummonAction -> materialSummonToText(action, master)
 
         is RestrictSummonAction -> restrictSummonToText(action, master)
 
@@ -294,7 +334,7 @@ object EffectTextRenderer {
             scopeToText(action.scope, master) + selectionParticle(action.scope) + "発動する"
 
         is GrantProtectionAction ->
-            scopeToText(action.scope, master, withCount = false) + "は" + action.kind.label
+            scopeToText(action.scope, master, withCount = false) + "は" + protectionLabel(action)
 
         is PreventAttackAction ->
             scopeToText(action.scope, master, withCount = false) + "は攻撃できない"
@@ -327,6 +367,11 @@ object EffectTextRenderer {
 
     fun conditionToText(condition: Condition, master: MasterData): String = when (condition) {
         is EventCondition -> eventConditionToText(condition, master)
+
+        is CounterCondition ->
+            scopeToText(condition.scope, master, withCount = false) +
+                "に${master.counterName(condition.counterId)}が" +
+                "${condition.value}個${condition.cmp.label}乗っている"
 
         is AnyOfCondition ->
             if (condition.conditions.isEmpty()) "（条件が未設定）"
@@ -383,11 +428,29 @@ object EffectTextRenderer {
             scopeToText(cost.scope, master) + "を" + cost.destination.label
 
         is RevealCost -> revealToText(cost.scope, cost.duration, master)
+
+        is CounterCost ->
+            scopeToText(cost.scope, master, withCount = false) +
+                "の${master.counterName(cost.counterId)}を${cost.amount}個取り除く"
     }
 
     /** 数値の指定を文にする。「自分の墓地のモンスターの数×100」など。 */
     fun valueToText(spec: ValueSpec, master: MasterData): String = when (spec) {
         is FixedValue -> spec.value.toString()
+
+        is AffectedCountValue -> buildString {
+            append("直前の処理で扱ったカードの数")
+            if (spec.multiplier != 1) append("×${spec.multiplier}")
+            if (spec.base != 0) append("＋${spec.base}")
+        }
+
+        is CounterValue -> buildString {
+            append(scopeToText(spec.scope, master, withCount = false))
+            append("に乗っている${master.counterName(spec.counterId)}の数")
+            if (spec.multiplier != 1) append("×${spec.multiplier}")
+            if (spec.base != 0) append("＋${spec.base}")
+        }
+
         is CountValue -> buildString {
             // 数を数えるだけなので「全ての」は付けずに読ませる。
             val scope = spec.scope.copy(selection = SelectionMode.CHOOSE)
@@ -593,7 +656,8 @@ object EffectTextRenderer {
 
         is GrantProtectionAction -> {
                 val who = subject(action.scope)
-                if (who.isEmpty()) action.kind.label else "${who}は${action.kind.label}"
+                val what = protectionLabel(action)
+                if (who.isEmpty()) what else "${who}は$what"
             }
 
             is PreventAttackAction -> {

@@ -5,10 +5,12 @@ import kotlinx.serialization.Serializable
 
 /** 永続効果で与えられる耐性の種類。 */
 @Serializable
-enum class ProtectionKind(val label: String) {
-    OPPONENT_EFFECTS("相手の効果を受けない"),
-    BATTLE_DESTRUCTION("戦闘では破壊されない"),
-    EFFECT_DESTRUCTION("効果では破壊されない");
+enum class ProtectionKind(val label: String, val usesSide: Boolean = true) {
+    /** 効果を受けない。誰の効果かは [GrantProtectionAction.from] で決める。 */
+    OPPONENT_EFFECTS("効果を受けない"),
+    BATTLE_DESTRUCTION("戦闘では破壊されない", usesSide = false),
+    EFFECT_DESTRUCTION("効果では破壊されない"),
+    NOT_TARGETED("効果の対象にならない");
 
     companion object {
         val all: List<ProtectionKind> get() = entries

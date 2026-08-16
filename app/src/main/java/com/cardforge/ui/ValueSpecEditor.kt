@@ -25,21 +25,13 @@ fun ValueSpecEditor(
     allowNegative: Boolean = false,
     onChange: (ValueSpec) -> Unit
 ) {
-    val counting = spec is CountValue
-
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Checkbox(
-                checked = counting,
-                onCheckedChange = { useCount ->
-                    onChange(
-                        if (useCount) CountValue()
-                        else FixedValue((spec as? FixedValue)?.value ?: 0)
-                    )
-                }
-            )
-            Text("カードの枚数で決める")
-        }
+        Dropdown(
+            label = "決め方",
+            items = ValueKind.all,
+            selected = ValueKind.of(spec),
+            itemLabel = { it.label }
+        ) { kind -> onChange(kind.create(spec)) }
 
         when (spec) {
             is FixedValue -> NumberField(
@@ -61,6 +53,45 @@ fun ValueSpecEditor(
 
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     NumberField("1枚あたり", spec.multiplier, Modifier.weight(1f)) {
+                        onChange(spec.copy(multiplier = it))
+                    }
+                    NumberField("固定で足す", spec.base, Modifier.weight(1f)) {
+                        onChange(spec.copy(base = it))
+                    }
+                }
+            }
+
+            is AffectedCountValue -> {
+                Text(
+                    "直前の処理（破壊した・墓地へ送った等）で扱ったカードの数を使います。" +
+                        "「破壊した数だけ特殊召喚する」のような効果に使います。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    NumberField("1枚あたり", spec.multiplier, Modifier.weight(1f)) {
+                        onChange(spec.copy(multiplier = it))
+                    }
+                    NumberField("固定で足す", spec.base, Modifier.weight(1f)) {
+                        onChange(spec.copy(base = it))
+                    }
+                }
+            }
+
+            is CounterValue -> {
+                Text(
+                    "カウンターが乗っているカード",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                CardScopeEditor(
+                    scope = spec.scope,
+                    master = master,
+                    showCount = false
+                ) { onChange(spec.copy(scope = it)) }
+                CounterPicker(master, spec.counterId) { onChange(spec.copy(counterId = it)) }
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    NumberField("1個あたり", spec.multiplier, Modifier.weight(1f)) {
                         onChange(spec.copy(multiplier = it))
                     }
                     NumberField("固定で足す", spec.base, Modifier.weight(1f)) {
@@ -110,6 +141,32 @@ fun CountSpecEditor(
             NumberField("固定で足す", counting.base, Modifier.weight(1f)) {
                 onChange(counting.copy(base = it.coerceIn(-9, 9)))
             }
+        }
+    }
+}
+
+/** 数値の決め方。 */
+private enum class ValueKind(val label: String) {
+    FIXED("決まった数"),
+    CARD_COUNT("カードの枚数で決める"),
+    AFFECTED("直前の処理で扱った枚数で決める"),
+    COUNTER("カウンターの数で決める");
+
+    fun create(current: ValueSpec): ValueSpec = when (this) {
+        FIXED -> FixedValue((current as? FixedValue)?.value ?: 0)
+        CARD_COUNT -> CountValue()
+        AFFECTED -> AffectedCountValue()
+        COUNTER -> CounterValue()
+    }
+
+    companion object {
+        val all: List<ValueKind> get() = entries
+
+        fun of(spec: ValueSpec): ValueKind = when (spec) {
+            is FixedValue -> FIXED
+            is CountValue -> CARD_COUNT
+            is AffectedCountValue -> AFFECTED
+            is CounterValue -> COUNTER
         }
     }
 }

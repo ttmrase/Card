@@ -154,8 +154,9 @@ fun DeckEditScreen(
     var preview by remember { mutableStateOf<CardDef?>(null) }
 
     val counts = deck.cardIds.groupingBy { it }.eachCount()
+    // トークンはデッキに入れられない。
     val visible = library.cards.filter {
-        query.isBlank() || it.name.contains(query, ignoreCase = true)
+        !it.isToken && (query.isBlank() || it.name.contains(query, ignoreCase = true))
     }
 
     fun add(cardId: String) {

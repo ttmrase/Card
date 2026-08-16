@@ -38,6 +38,10 @@ fun filterChipLabel(filter: CardFilter, master: MasterData): String = when (filt
     is AnyFilter ->
         if (filter.filters.isEmpty()) "（未設定）"
         else filter.filters.joinToString("／") { filterChipLabel(it, master) }
+
+    is NotFilter -> filterChipLabel(filter.filter, master) + "を除く"
+    is AffectedNameFilter ->
+        if (filter.exclude) "直前に扱ったカードと同名を除く" else "直前に扱ったカードと同名"
 }
 
 private enum class FilterType(val label: String) {
@@ -51,7 +55,10 @@ private enum class FilterType(val label: String) {
     POSITION("表示形式"),
     NAME("カード名"),
     SUMMONED_BY_THIS("このカードの効果で特殊召喚された"),
-    ANY_OF("いずれかに当てはまる（または）")
+    ANY_OF("いずれかに当てはまる（または）"),
+    NOT("〜を除く（当てはまらないカード）"),
+    AFFECTED_NAME("直前に扱ったカードと同名"),
+    NOT_AFFECTED_NAME("直前に扱ったカードと同名を除く")
 }
 
 @Composable
@@ -71,6 +78,8 @@ fun FilterDialog(
     var name by remember { mutableStateOf("") }
     var anyOf by remember { mutableStateOf<List<CardFilter>>(emptyList()) }
     var addingAnyOf by remember { mutableStateOf(false) }
+    var excluded by remember { mutableStateOf<CardFilter?>(null) }
+    var pickingExcluded by remember { mutableStateOf(false) }
 
     val built: CardFilter? = when (type) {
         FilterType.KIND -> KindFilter(kind)
@@ -84,6 +93,9 @@ fun FilterDialog(
         FilterType.NAME -> if (name.isBlank()) null else NameFilter(name.trim())
         FilterType.SUMMONED_BY_THIS -> SummonedByThisFilter()
         FilterType.ANY_OF -> if (anyOf.isEmpty()) null else AnyFilter(anyOf)
+        FilterType.NOT -> excluded?.let { NotFilter(it) }
+        FilterType.AFFECTED_NAME -> AffectedNameFilter(exclude = false)
+        FilterType.NOT_AFFECTED_NAME -> AffectedNameFilter(exclude = true)
     }
 
     AlertDialog(
@@ -156,6 +168,33 @@ fun FilterDialog(
                         }
                     }
 
+                    FilterType.NOT -> {
+                        Text(
+                            "ここで選んだ条件に当てはまらないカードだけを指します。" +
+                                "「『VALIS』を除くこのカテゴリのカード」のように使います。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        FlowRowSimple {
+                            excluded?.let {
+                                Chip(filterChipLabel(it, master) + " ✕", selected = true) {
+                                    excluded = null
+                                }
+                            }
+                            if (excluded == null) {
+                                Chip("＋ 除く条件を選ぶ") { pickingExcluded = true }
+                            }
+                        }
+                    }
+
+                    FilterType.AFFECTED_NAME, FilterType.NOT_AFFECTED_NAME -> Text(
+                        "直前の処理で扱ったカード（破壊した・墓地へ送った等）と" +
+                            "同じ名前かどうかで絞り込みます。" +
+                            "「破壊して、デッキから同名カードを」のような効果に使います。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
                     FilterType.SUMMONED_BY_THIS -> Text(
                         "この効果を持つカードの効果で特殊召喚されたカードだけを指します。" +
                             "「このカードの効果によって特殊召喚されたモンスターは〜」" +
@@ -183,6 +222,17 @@ fun FilterDialog(
             onConfirm = {
                 anyOf = anyOf + it
                 addingAnyOf = false
+            }
+        )
+    }
+
+    if (pickingExcluded) {
+        FilterDialog(
+            master = master,
+            onDismiss = { pickingExcluded = false },
+            onConfirm = {
+                excluded = it
+                pickingExcluded = false
             }
         )
     }
@@ -220,6 +270,14 @@ fun CardScopeEditor(
                 )
             }
             return@Column
+        }
+
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Checkbox(
+                checked = scope.excludeSelf,
+                onCheckedChange = { onChange(scope.copy(excludeSelf = it)) }
+            )
+            Text("この効果を持つカード自身を除く")
         }
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

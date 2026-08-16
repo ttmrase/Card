@@ -3,9 +3,11 @@ package com.cardforge.game
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateList
+import androidx.compose.runtime.snapshots.SnapshotStateMap
 import com.cardforge.model.*
 
 /**
@@ -31,6 +33,13 @@ class CardInstance(
 
     /** 発動する効果で与えられた、そのターンだけの耐性。 */
     val turnProtections: SnapshotStateList<ProtectionKind> = mutableStateListOf()
+
+    /** 乗っているカウンター。種類の ID ごとに個数を持つ。 */
+    val counters: SnapshotStateMap<String, Int> = mutableStateMapOf()
+
+    /** [counterId] のカウンターの数。null なら全種類の合計。 */
+    fun counterCount(counterId: String?): Int =
+        if (counterId == null) counters.values.sum() else counters[counterId] ?: 0
 
     /** 発動する効果で、そのターン攻撃を封じられているか。 */
     var attackLockedThisTurn by mutableStateOf(false)
@@ -155,6 +164,9 @@ class GameState(
 
     val log: SnapshotStateList<String> = mutableStateListOf()
 
+    /** トークンを作るための定義。ライブラリのトークンカードを持ち込む。 */
+    var tokenDefs: List<CardDef> = emptyList()
+
     /**
      * このターンに起きた出来事。
      * 「〜されたターン」という条件を見るために残しておく。
@@ -190,6 +202,7 @@ object GameSetup {
         fillDeck(p1, library, deckB)
 
         val state = GameState(listOf(p0, p1), library.master)
+        state.tokenDefs = library.cards.filter { it.isToken }
         state.turnPlayerIndex = firstPlayer
         state.turn = 1
         state.phase = Phase.MAIN1

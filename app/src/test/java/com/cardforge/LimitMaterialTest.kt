@@ -22,8 +22,8 @@ private class First : Interaction {
     override suspend fun chooseOption(playerIndex: Int, prompt: String, options: List<String>) = 0
 }
 
-/** 【制限】の数え方と、儀式召喚、「または」の対象条件。 */
-class LimitRitualTest {
+/** 【制限】の数え方と、素材依存の特殊召喚、「または」の対象条件。 */
+class LimitMaterialTest {
 
     private val valis = "cat-valis"
     private val master = MasterData(categories = listOf(NamedEntry(valis, "VALIS")))
@@ -212,9 +212,9 @@ class LimitRitualTest {
         )
     }
 
-    // -- 儀式召喚 ----------------------------------------------------------
+    // -- 素材依存の特殊召喚 ----------------------------------------------------------
 
-    private fun ritualSpell(requirement: RitualRequirement) = CardInstance(
+    private fun materialSpell(requirement: MaterialRequirement) = CardInstance(
         newId(),
         CardDef(
             id = newId(), name = "VALIS・儀式", kind = CardKind.SPELL,
@@ -223,7 +223,7 @@ class LimitRitualTest {
                 clauses = listOf(
                     EffectClause(
                         actions = listOf(
-                            RitualSummonAction(
+                            MaterialSummonAction(
                                 summon = CardScope(
                                     who = PlayerRef.SELF,
                                     zone = ZoneType.HAND,
@@ -249,7 +249,7 @@ class LimitRitualTest {
     )
 
     @Test
-    fun `a ritual summon releases enough levels and summons the monster`() = runBlocking {
+    fun `a material summon releases enough levels and summons the monster`() = runBlocking {
         val (state, engine) = game()
         val me = state.players[0]
 
@@ -258,7 +258,7 @@ class LimitRitualTest {
         me.monsterZones[0] = monster("素材A", level = 4)
         me.monsterZones[1] = monster("素材B", level = 3)
 
-        val card = ritualSpell(RitualRequirement.LEVEL_OR_MORE)
+        val card = materialSpell(MaterialRequirement.LEVEL_OR_MORE)
         me.hand.add(card)
         assertTrue(engine.activatableCards(me).any { it === card })
         engine.activateCard(card, me)
@@ -270,14 +270,14 @@ class LimitRitualTest {
     }
 
     @Test
-    fun `a ritual summon cannot be activated without enough levels`() {
+    fun `a material summon cannot be activated without enough levels`() {
         val (state, engine) = game()
         val me = state.players[0]
 
         me.hand.add(monster("VALIS・儀式獣", level = 10, category = valis))
         me.monsterZones[0] = monster("素材A", level = 4)
 
-        val card = ritualSpell(RitualRequirement.LEVEL_OR_MORE)
+        val card = materialSpell(MaterialRequirement.LEVEL_OR_MORE)
         me.hand.add(card)
 
         assertFalse(engine.activatableCards(me).any { it === card })
@@ -296,7 +296,7 @@ class LimitRitualTest {
         me.monsterZones[0] = monster("素材A", level = 4)
         me.monsterZones[1] = monster("素材B", level = 4)
 
-        val card = ritualSpell(RitualRequirement.LEVEL_EXACT)
+        val card = materialSpell(MaterialRequirement.LEVEL_EXACT)
         me.hand.add(card)
         assertFalse("4+4 では 7 ちょうどにならない", engine.activatableCards(me).any { it === card })
 
@@ -307,7 +307,7 @@ class LimitRitualTest {
     @Test
     fun `the ritual reads like a ritual spell`() {
         val text = EffectTextRenderer.render(
-            ritualSpell(RitualRequirement.LEVEL_OR_MORE).card,
+            materialSpell(MaterialRequirement.LEVEL_OR_MORE).card,
             master
         )
         assertTrue(text, text.contains("レベルの合計がそのモンスターのレベル以上になるように"))

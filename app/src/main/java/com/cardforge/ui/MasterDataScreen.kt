@@ -66,6 +66,13 @@ fun MasterDataScreen(
                 onEdit = { editing = Triple(MasterKind.CATEGORY, it, it.name) },
                 onDelete = { pendingDelete = MasterKind.CATEGORY to it }
             )
+            MasterSection(
+                kind = MasterKind.COUNTER,
+                entries = master.counters,
+                onAdd = { editing = Triple(MasterKind.COUNTER, null, "") },
+                onEdit = { editing = Triple(MasterKind.COUNTER, it, it.name) },
+                onDelete = { pendingDelete = MasterKind.COUNTER to it }
+            )
             Spacer(Modifier.height(24.dp))
         }
     }
@@ -110,6 +117,7 @@ private fun applyEntry(
         MasterKind.ATTRIBUTE -> master.copy(attributes = merge(master.attributes))
         MasterKind.RACE -> master.copy(races = merge(master.races))
         MasterKind.CATEGORY -> master.copy(categories = merge(master.categories))
+        MasterKind.COUNTER -> master.copy(counters = merge(master.counters))
     }
 }
 

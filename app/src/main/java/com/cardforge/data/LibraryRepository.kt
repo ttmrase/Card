@@ -121,6 +121,7 @@ class LibraryRepository(private val context: Context) {
             MasterKind.ATTRIBUTE -> master.copy(attributes = master.attributes.filterNot { it.id == entryId })
             MasterKind.RACE -> master.copy(races = master.races.filterNot { it.id == entryId })
             MasterKind.CATEGORY -> master.copy(categories = master.categories.filterNot { it.id == entryId })
+            MasterKind.COUNTER -> master.copy(counters = master.counters.filterNot { it.id == entryId })
         }
         val newCards = lib.cards.map { card ->
             when (kind) {
@@ -134,6 +135,9 @@ class LibraryRepository(private val context: Context) {
                     if (entryId in card.categoryIds)
                         card.copy(categoryIds = card.categoryIds - entryId)
                     else card
+
+                // カウンターの種類はカード本体には載らないので、そのまま。
+                MasterKind.COUNTER -> card
             }
         }
         lib.copy(master = newMaster, cards = newCards)
@@ -242,7 +246,8 @@ class LibraryRepository(private val context: Context) {
             master = MasterData(
                 attributes = master.attributes.filter { it.id in referenced },
                 races = master.races.filter { it.id in referenced },
-                categories = master.categories.filter { it.id in referenced }
+                categories = master.categories.filter { it.id in referenced },
+                counters = master.counters.filter { it.id in referenced }
             ),
             cards = cards,
             decks = decks,
@@ -319,7 +324,8 @@ class LibraryRepository(private val context: Context) {
         val newMaster = MasterData(
             attributes = merge(payload.master.attributes, master.attributes),
             races = merge(payload.master.races, master.races),
-            categories = merge(payload.master.categories, master.categories)
+            categories = merge(payload.master.categories, master.categories),
+            counters = merge(payload.master.counters, master.counters)
         )
 
         // --- イラストを内部ストレージに戻す ---
@@ -378,5 +384,6 @@ class LibraryRepository(private val context: Context) {
 enum class MasterKind(val label: String) {
     ATTRIBUTE("属性"),
     RACE("種族"),
-    CATEGORY("カテゴリ")
+    CATEGORY("カテゴリ"),
+    COUNTER("カウンター")
 }

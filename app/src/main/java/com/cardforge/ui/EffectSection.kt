@@ -41,6 +41,8 @@ fun EffectEditorSection(
     kind: CardKind,
     effect: EffectText,
     master: MasterData,
+    /** 「トークンを特殊召喚する」で選べるトークンのカード。 */
+    tokenCards: List<CardDef> = emptyList(),
     onChange: (EffectText) -> Unit
 ) {
     var conditionSlot by remember { mutableStateOf<EditSlot?>(null) }
@@ -220,6 +222,7 @@ fun EffectEditorSection(
         ActionDialog(
             initial = slot.itemIndex?.let { effect.actionsAt(slot).getOrNull(it) },
             master = master,
+            tokenCards = tokenCards,
             onDismiss = { actionSlot = null },
             onConfirm = { action ->
                 onChange(effect.withActions(slot) { it.upsert(slot.itemIndex, action) })

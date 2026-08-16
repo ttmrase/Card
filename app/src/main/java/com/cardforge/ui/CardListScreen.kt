@@ -24,6 +24,7 @@ import com.cardforge.model.CardKind
 import androidx.compose.ui.platform.LocalContext
 import com.cardforge.text.EffectTextRenderer
 import com.cardforge.ui.theme.Surface1
+import com.cardforge.ui.theme.Gold
 
 @Composable
 fun CardListScreen(
@@ -35,6 +36,7 @@ fun CardListScreen(
     val library = repository.library
     var query by remember { mutableStateOf("") }
     var kindFilter by remember { mutableStateOf<CardKind?>(null) }
+    var showTokens by remember { mutableStateOf(false) }
     var pendingDelete by remember { mutableStateOf<CardDef?>(null) }
     var preview by remember { mutableStateOf<CardDef?>(null) }
     var message by remember { mutableStateOf<String?>(null) }
@@ -79,8 +81,10 @@ fun CardListScreen(
         }.onFailure { message = "取り込みに失敗しました。" }
     }
 
+    // トークンは普段は伏せておき、「トークン」を選んだときだけ並べる。
     val visible = library.cards.filter { card ->
-        (kindFilter == null || card.kind == kindFilter) &&
+        card.isToken == showTokens &&
+            (kindFilter == null || card.kind == kindFilter) &&
             (query.isBlank() || card.name.contains(query, ignoreCase = true))
     }
 
@@ -118,18 +122,43 @@ fun CardListScreen(
                     .padding(horizontal = 16.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Chip("すべて", selected = kindFilter == null) { kindFilter = null }
+                Chip("すべて", selected = kindFilter == null && !showTokens) {
+                    kindFilter = null
+                    showTokens = false
+                }
                 CardKind.all.forEach { kind ->
                     Chip(
                         text = kind.label,
                         selected = kindFilter == kind,
                         color = kindColor(kind)
-                    ) { kindFilter = if (kindFilter == kind) null else kind }
+                    ) {
+                        kindFilter = if (kindFilter == kind) null else kind
+                        showTokens = false
+                    }
+                }
+                Chip("トークン", selected = showTokens, color = Gold) {
+                    showTokens = !showTokens
+                    kindFilter = null
                 }
             }
 
+            if (showTokens) {
+                Text(
+                    "トークンはデッキに入れられません。" +
+                        "効果の「トークンを特殊召喚する」から出して使います。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 16.dp)
+                )
+            }
+
             if (visible.isEmpty()) {
-                EmptyHint("カードがありません。右下のボタンから作成できます。")
+                EmptyHint(
+                    if (showTokens)
+                        "トークンがありません。右下のボタンから作り、" +
+                            "「召喚のしかた」で「トークンにする」を選んでください。"
+                    else "カードがありません。右下のボタンから作成できます。"
+                )
             } else {
                 LazyColumn(
                     contentPadding = PaddingValues(16.dp),

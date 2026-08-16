@@ -46,6 +46,19 @@ data class PositionFilter(val position: Position) : CardFilter
 @SerialName("name")
 data class NameFilter(val text: String) : CardFilter
 
+/** その条件に当てはまらないカード。「〜を除く」と書きたいときに使う。 */
+@Serializable
+@SerialName("notFilter")
+data class NotFilter(val filter: CardFilter) : CardFilter
+
+/**
+ * 直前の処理で扱ったカードと同じ名前のカード。
+ * [exclude] が true なら逆に、同名のカードを除く。
+ */
+@Serializable
+@SerialName("affectedName")
+data class AffectedNameFilter(val exclude: Boolean = false) : CardFilter
+
 /** 並べた条件のうち、どれか1つに当てはまればよい。 */
 @Serializable
 @SerialName("anyFilter")
@@ -82,7 +95,9 @@ data class CardScope(
      * 「〜まで」。対象がその数に足りなくても、あるだけ処理する。
      * これを付けた指定は、発動時の「最後まで処理できるか」の判定でも数に数えない。
      */
-    val upTo: Boolean = false
+    val upTo: Boolean = false,
+    /** 「このカードを除く」。この効果を持つカード自身を対象から外す。 */
+    val excludeSelf: Boolean = false
 ) {
     /** 枚数の指定。[countSpec] があればそちらが優先される。 */
     val countValue: ValueSpec get() = countSpec ?: FixedValue(count)
@@ -98,6 +113,24 @@ sealed interface ValueSpec
 @Serializable
 @SerialName("fixedValue")
 data class FixedValue(val value: Int = 0) : ValueSpec
+
+/** [base] ＋ 直前の処理で扱ったカードの枚数 × [multiplier]。 */
+@Serializable
+@SerialName("affectedCount")
+data class AffectedCountValue(
+    val multiplier: Int = 1,
+    val base: Int = 0
+) : ValueSpec
+
+/** [base] ＋ [scope] のカードに乗っているカウンターの数 × [multiplier]。 */
+@Serializable
+@SerialName("counterValue")
+data class CounterValue(
+    val scope: CardScope = CardScope(who = PlayerRef.SELF, selection = SelectionMode.ALL),
+    val counterId: String? = null,
+    val multiplier: Int = 1,
+    val base: Int = 0
+) : ValueSpec
 
 /** [base] ＋ [scope] に当てはまるカードの枚数 × [multiplier]。 */
 @Serializable
@@ -185,32 +218,32 @@ data class RestrictSummonAction(
     val fromActivation: Boolean = true
 ) : Action
 
-/** 儀式召喚で、リリースするモンスターに求める条件。 */
+/** 素材依存の特殊召喚で、素材に求める条件。 */
 @Serializable
-enum class RitualRequirement(val label: String) {
+enum class MaterialRequirement(val label: String) {
     /** レベルの合計が、出すモンスターのレベルとぴったり同じ。 */
     LEVEL_EXACT("レベルの合計がぴったり同じ"),
 
     /** レベルの合計が、出すモンスターのレベル以上。 */
     LEVEL_OR_MORE("レベルの合計が同じか大きい"),
 
-    /** 体数だけを見る（[RitualSummonAction.count] 体）。 */
+    /** 体数だけを見る（[MaterialSummonAction.count] 体）。 */
     COUNT("決まった体数");
 
     companion object {
-        val all: List<RitualRequirement> get() = entries
+        val all: List<MaterialRequirement> get() = entries
     }
 }
 
 /**
- * 遊戯王で言う儀式召喚。
+ * 素材を送って特殊召喚する。遊戯王で言う儀式召喚や融合召喚にあたる。
  *
- * [material] のモンスターを [destination] へ送り、[summon] のモンスターを特殊召喚する。
- * 送るモンスターに求める条件は [requirement] で決める。
+ * [material] のカードを [destination] へ送り、[summon] のモンスターを特殊召喚する。
+ * 素材に求める条件は [requirement] で決める。
  */
 @Serializable
 @SerialName("ritualSummon")
-data class RitualSummonAction(
+data class MaterialSummonAction(
     /** 特殊召喚するモンスターの居場所と条件。 */
     val summon: CardScope = CardScope(
         who = PlayerRef.SELF,
@@ -218,23 +251,66 @@ data class RitualSummonAction(
         filters = listOf(KindFilter(CardKind.MONSTER)),
         count = 1
     ),
-    /** リリース（コストとして送る）モンスターの居場所と条件。 */
+    /** 素材として送るカードの居場所と条件。 */
     val material: CardScope = CardScope(
         who = PlayerRef.SELF,
         zone = ZoneType.FIELD,
         filters = listOf(KindFilter(CardKind.MONSTER)),
         selection = SelectionMode.CHOOSE
     ),
-    /** 送ったモンスターの行き先。 */
+    /** 送った素材の行き先。 */
     val destination: MoveDestination = MoveDestination.GRAVEYARD,
-    val requirement: RitualRequirement = RitualRequirement.LEVEL_OR_MORE,
-    /** [RitualRequirement.COUNT] のときに必要な体数。 */
+    val requirement: MaterialRequirement = MaterialRequirement.LEVEL_OR_MORE,
+    /** [MaterialRequirement.COUNT] のときに必要な体数。 */
     val count: Int = 1,
     /** 選べる表示形式。2つ以上あれば処理のときにプレイヤーが選ぶ。 */
     val positionChoices: List<Position> = listOf(Position.ATTACK)
 ) : Action {
     val choices: List<Position> get() = positionChoices.ifEmpty { listOf(Position.ATTACK) }
 }
+
+/** カードにカウンターを乗せる。 */
+@Serializable
+@SerialName("addCounter")
+data class AddCounterAction(
+    val scope: CardScope,
+    val counterId: String? = null,
+    val amount: Int = 1
+) : Action
+
+/** カードからカウンターを取り除く。 */
+@Serializable
+@SerialName("removeCounter")
+data class RemoveCounterAction(
+    val scope: CardScope,
+    val counterId: String? = null,
+    val amount: Int = 1
+) : Action
+
+/** トークンを特殊召喚する。 */
+@Serializable
+@SerialName("createToken")
+data class CreateTokenAction(
+    /** 出すトークンのカード ID。 */
+    val tokenCardId: String? = null,
+    val count: Int = 1,
+    val controller: PlayerRef = PlayerRef.SELF,
+    val positionChoices: List<Position> = listOf(Position.ATTACK)
+) : Action {
+    val choices: List<Position> get() = positionChoices.ifEmpty { listOf(Position.ATTACK) }
+}
+
+/**
+ * 処理の行き先を差し替える。永続の効果に書いて使う。
+ *
+ * 「墓地へ送られる代わりに除外する」のように、墓地へ行く処理に割り込む。
+ */
+@Serializable
+@SerialName("replaceDestination")
+data class ReplaceDestinationAction(
+    val scope: CardScope,
+    val to: MoveDestination = MoveDestination.BANISHED
+) : Action
 
 /**
  * フェイズやターンの進み方を変える述語。
@@ -339,7 +415,9 @@ data class MillAction(
 @SerialName("grantProtection")
 data class GrantProtectionAction(
     val scope: CardScope,
-    val kind: ProtectionKind = ProtectionKind.OPPONENT_EFFECTS
+    val kind: ProtectionKind = ProtectionKind.OPPONENT_EFFECTS,
+    /** 誰の効果に対する耐性か。戦闘の耐性では見ない。 */
+    val from: PlayerRef = PlayerRef.OPPONENT
 ) : Action
 
 /** 攻撃できなくする。永続なら常時、発動ならそのターンの間。 */
@@ -439,6 +517,16 @@ fun flatten(conditions: List<Condition>): List<Condition> =
 @SerialName("selfZone")
 data class SelfZoneCondition(val zones: List<ZoneType> = emptyList()) : Condition
 
+/** 「〇〇カウンターが n 個以上乗っている場合」という条件。 */
+@Serializable
+@SerialName("counter")
+data class CounterCondition(
+    val scope: CardScope = CardScope(selfOnly = true),
+    val counterId: String? = null,
+    val cmp: Cmp = Cmp.GE,
+    val value: Int = 1
+) : Condition
+
 /** 指定したフェイズにだけ発動できる。 */
 @Serializable
 @SerialName("phase")
@@ -518,6 +606,15 @@ data class MoveCost(
 @Serializable
 @SerialName("selfCost")
 data class DiscardSelfCost(val banish: Boolean = false) : Cost
+
+/** コストとしてカウンターを取り除く。 */
+@Serializable
+@SerialName("counterCost")
+data class CounterCost(
+    val scope: CardScope = CardScope(selfOnly = true),
+    val counterId: String? = null,
+    val amount: Int = 1
+) : Cost
 
 /** コストとしてカードを見せる（公開する）。 */
 @Serializable

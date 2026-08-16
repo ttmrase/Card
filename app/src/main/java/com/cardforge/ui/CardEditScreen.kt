@@ -52,6 +52,7 @@ fun CardEditScreen(
     var error by remember { mutableStateOf<String?>(null) }
 
     var cropTarget by remember { mutableStateOf<String?>(null) }
+    var addingSummonFilter by remember { mutableStateOf(false) }
 
     val imagePicker = rememberLauncherForActivityResult(
         ActivityResultContracts.PickVisualMedia()
@@ -207,6 +208,54 @@ fun CardEditScreen(
                         }
                     }
                 }
+
+                // ---- 召喚のしかた -------------------------------------
+                SectionCard(title = "召喚のしかた") {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(
+                            checked = card.isToken,
+                            onCheckedChange = { card = card.copy(isToken = it) }
+                        )
+                        Text("トークンにする")
+                    }
+                    Text(
+                        "トークンはデッキに入れられず、効果でしか出てきません。" +
+                            "モンスターゾーンを離れるとゲームから取り除かれます。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(
+                            checked = card.cannotNormalSummon,
+                            onCheckedChange = { card = card.copy(cannotNormalSummon = it) }
+                        )
+                        Text("通常召喚できない")
+                    }
+
+                    Text(
+                        "特殊召喚できる効果を限定する（空なら制限なし）",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    FlowRowSimple {
+                        card.specialSummonOnlyBy.forEachIndexed { index, filter ->
+                            Chip(filterChipLabel(filter, master) + " ✕", selected = true) {
+                                card = card.copy(
+                                    specialSummonOnlyBy = card.specialSummonOnlyBy
+                                        .toMutableList().also { it.removeAt(index) }
+                                )
+                            }
+                        }
+                        Chip("＋ 条件を追加") { addingSummonFilter = true }
+                    }
+                    Text(
+                        "「「アララギ」カードの効果によってのみ特殊召喚できる」" +
+                            "のように、出せるカードを絞れます。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
 
             // ---- カテゴリ ---------------------------------------------
@@ -270,7 +319,8 @@ fun CardEditScreen(
                 EffectEditorSection(
                     kind = card.kind,
                     effect = effect,
-                    master = master
+                    master = master,
+                    tokenCards = library.cards.filter { it.isToken && it.id != card.id }
                 ) { card = card.copy(effect = it) }
             }
 
@@ -373,11 +423,23 @@ fun CardEditScreen(
         )
     }
 
+    if (addingSummonFilter) {
+        FilterDialog(
+            master = master,
+            onDismiss = { addingSummonFilter = false },
+            onConfirm = {
+                card = card.copy(specialSummonOnlyBy = card.specialSummonOnlyBy + it)
+                addingSummonFilter = false
+            }
+        )
+    }
+
     managingMaster?.let { kind ->
         val entries = when (kind) {
             MasterKind.ATTRIBUTE -> master.attributes
             MasterKind.RACE -> master.races
             MasterKind.CATEGORY -> master.categories
+            MasterKind.COUNTER -> master.counters
         }
         MasterEntryManagerDialog(
             kind = kind,
@@ -400,6 +462,9 @@ fun CardEditScreen(
                         repository.updateMaster(master.copy(categories = master.categories + entry))
                         card = card.copy(categoryIds = card.categoryIds + entry.id)
                     }
+
+                    MasterKind.COUNTER ->
+                        repository.updateMaster(master.copy(counters = master.counters + entry))
                 }
             },
             onRename = { entry, name ->
@@ -411,6 +476,7 @@ fun CardEditScreen(
                         MasterKind.ATTRIBUTE -> master.copy(attributes = merge(master.attributes))
                         MasterKind.RACE -> master.copy(races = merge(master.races))
                         MasterKind.CATEGORY -> master.copy(categories = merge(master.categories))
+                        MasterKind.COUNTER -> master.copy(counters = merge(master.counters))
                     }
                 )
             },
@@ -425,6 +491,7 @@ fun CardEditScreen(
                         if (card.raceId == entry.id) card.copy(raceId = null) else card
 
                     MasterKind.CATEGORY -> card.copy(categoryIds = card.categoryIds - entry.id)
+                    MasterKind.COUNTER -> card
                 }
             },
             onDismiss = { managingMaster = null }

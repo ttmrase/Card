@@ -42,6 +42,7 @@ object IdRemapper {
         attributeId = card.attributeId?.let { mapping[it] ?: it },
         raceId = card.raceId?.let { mapping[it] ?: it },
         categoryIds = card.categoryIds.map { mapping[it] ?: it },
+        specialSummonOnlyBy = card.specialSummonOnlyBy.map { remapFilter(it, mapping) },
         effect = card.effect?.let { remapEffect(it, mapping) },
         continuous = card.continuous.map { remapContinuous(it, mapping) }
     )
@@ -83,7 +84,12 @@ object IdRemapper {
     /** 「〜の数だけ」のような数の指定も、中の対象指定を貼り替える。 */
     private fun remapValue(spec: ValueSpec, m: Map<String, String>): ValueSpec = when (spec) {
         is CountValue -> spec.copy(scope = remapScope(spec.scope, m))
-        is FixedValue -> spec
+        is CounterValue -> spec.copy(
+            scope = remapScope(spec.scope, m),
+            counterId = spec.counterId?.let { m[it] ?: it }
+        )
+
+        is FixedValue, is AffectedCountValue -> spec
     }
 
     private fun remapFilter(filter: CardFilter, m: Map<String, String>): CardFilter =
@@ -92,6 +98,7 @@ object IdRemapper {
             is RaceFilter -> filter.copy(raceId = m[filter.raceId] ?: filter.raceId)
             is CategoryFilter -> filter.copy(categoryId = m[filter.categoryId] ?: filter.categoryId)
             is AnyFilter -> filter.copy(filters = filter.filters.map { remapFilter(it, m) })
+            is NotFilter -> filter.copy(filter = remapFilter(filter.filter, m))
             else -> filter
         }
 
@@ -105,6 +112,11 @@ object IdRemapper {
 
             is AnyOfCondition ->
                 condition.copy(conditions = condition.conditions.map { remapCondition(it, m) })
+
+            is CounterCondition -> condition.copy(
+                scope = remapScope(condition.scope, m),
+                counterId = condition.counterId?.let { m[it] ?: it }
+            )
             else -> condition
         }
 
@@ -114,6 +126,10 @@ object IdRemapper {
         is BanishFromGraveCost -> cost.copy(filters = cost.filters.map { remapFilter(it, m) })
         is MoveCost -> cost.copy(scope = remapScope(cost.scope, m))
         is RevealCost -> cost.copy(scope = remapScope(cost.scope, m))
+        is CounterCost -> cost.copy(
+            scope = remapScope(cost.scope, m),
+            counterId = cost.counterId?.let { m[it] ?: it }
+        )
         else -> cost
     }
 
@@ -132,10 +148,22 @@ object IdRemapper {
         is PreventAttackAction -> action.copy(scope = remapScope(action.scope, m))
         is RevealAction -> action.copy(scope = remapScope(action.scope, m))
 
-        is RitualSummonAction -> action.copy(
+        is MaterialSummonAction -> action.copy(
             summon = remapScope(action.summon, m),
             material = remapScope(action.material, m)
         )
+
+        is AddCounterAction -> action.copy(
+            scope = remapScope(action.scope, m),
+            counterId = action.counterId?.let { m[it] ?: it }
+        )
+
+        is RemoveCounterAction -> action.copy(
+            scope = remapScope(action.scope, m),
+            counterId = action.counterId?.let { m[it] ?: it }
+        )
+
+        is ReplaceDestinationAction -> action.copy(scope = remapScope(action.scope, m))
 
         is GrantEffectAction -> action.copy(
             scope = remapScope(action.scope, m),
@@ -177,6 +205,7 @@ object IdRemapper {
         card.attributeId?.let(ids::add)
         card.raceId?.let(ids::add)
         ids += card.categoryIds
+        collectFilters(card.specialSummonOnlyBy, ids)
 
         card.effect?.let { effect ->
             effect.conditions.forEach { collectCondition(it, ids) }
@@ -206,6 +235,7 @@ object IdRemapper {
                 is RaceFilter -> ids += filter.raceId
                 is CategoryFilter -> ids += filter.categoryId
                 is AnyFilter -> collectFilters(filter.filters, ids)
+                is NotFilter -> collectFilters(listOf(filter.filter), ids)
                 else -> Unit
             }
         }
@@ -230,6 +260,10 @@ object IdRemapper {
             }
 
             is AnyOfCondition -> condition.conditions.forEach { collectCondition(it, ids) }
+            is CounterCondition -> {
+                collectScope(condition.scope, ids)
+                condition.counterId?.let(ids::add)
+            }
             else -> Unit
         }
     }
@@ -241,6 +275,10 @@ object IdRemapper {
             is BanishFromGraveCost -> collectFilters(cost.filters, ids)
             is MoveCost -> collectScope(cost.scope, ids)
             is RevealCost -> collectScope(cost.scope, ids)
+            is CounterCost -> {
+                collectScope(cost.scope, ids)
+                cost.counterId?.let(ids::add)
+            }
             else -> Unit
         }
     }
@@ -262,10 +300,22 @@ object IdRemapper {
             is RevealAction -> collectScope(action.scope, ids)
             is RestrictSummonAction -> collectFilters(action.filters, ids)
 
-            is RitualSummonAction -> {
+            is MaterialSummonAction -> {
                 collectScope(action.summon, ids)
                 collectScope(action.material, ids)
             }
+
+            is AddCounterAction -> {
+                collectScope(action.scope, ids)
+                action.counterId?.let(ids::add)
+            }
+
+            is RemoveCounterAction -> {
+                collectScope(action.scope, ids)
+                action.counterId?.let(ids::add)
+            }
+
+            is ReplaceDestinationAction -> collectScope(action.scope, ids)
 
             is GrantEffectAction -> {
                 collectScope(action.scope, ids)
