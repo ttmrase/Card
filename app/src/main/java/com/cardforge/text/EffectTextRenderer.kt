@@ -51,6 +51,9 @@ object EffectTextRenderer {
     ): String {
         val sb = StringBuilder()
 
+        filters.filterIsInstance<SummonedByThisFilter>().forEach {
+            sb.append(if (it.enabled) "このカードの効果によって特殊召喚された" else "それ以外の")
+        }
         filters.filterIsInstance<NameFilter>().forEach { sb.append("「${it.text}」という名前の") }
         filters.filterIsInstance<CategoryFilter>().forEach {
             sb.append("「${master.categoryName(it.categoryId)}」")
@@ -193,6 +196,8 @@ object EffectTextRenderer {
     fun actionToText(action: Action, master: MasterData): String = when (action) {
         is GrantEffectAction -> grantEffectToText(action, master)
 
+        is AdvancePhaseAction -> action.kind.label.removeSuffix("する") + "する"
+
         is RestrictSummonAction -> restrictSummonToText(action, master)
 
         is RevealAction -> revealToText(action.scope, action.duration, master)
@@ -278,17 +283,29 @@ object EffectTextRenderer {
 
     /** 「相手の闇属性モンスターが破壊された場合」のようなイベント条件の文。 */
     fun eventConditionToText(condition: EventCondition, master: MasterData): String {
-        val by = condition.cause.prefix
-        if (condition.selfOnly) return "このカードが${by}${condition.event.label}場合"
+        val by = buildString {
+            append(condition.cause.prefix)
+            // 「罠カードの対象に取られた」のように、起こした側を書く。
+            if (condition.sourceFilters.isNotEmpty()) {
+                append(filtersToNoun(condition.sourceFilters, master, ZoneType.FIELD))
+                append("によって")
+            }
+        }
+        val tail = condition.window.suffix
+        if (condition.selfOnly) return "このカードが${by}${condition.event.label}$tail"
         if (condition.event.isPlayerEvent) {
-            return "${condition.who.label}が${by}${condition.event.label}場合"
+            return "${condition.who.label}が${by}${condition.event.label}$tail"
         }
         val noun = filtersToNoun(condition.filters, master, ZoneType.FIELD)
-        return "${condition.who.label}の${noun}が${by}${condition.event.label}場合"
+        return "${condition.who.label}の${noun}が${by}${condition.event.label}$tail"
     }
 
     fun conditionToText(condition: Condition, master: MasterData): String = when (condition) {
         is EventCondition -> eventConditionToText(condition, master)
+
+        is AnyOfCondition ->
+            if (condition.conditions.isEmpty()) "（条件が未設定）"
+            else condition.conditions.joinToString("、または") { conditionToText(it, master) }
 
         is CardExistsCondition -> {
             val noun = scopeToText(condition.scope, master, withCount = false)

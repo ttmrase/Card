@@ -192,12 +192,39 @@ enum class GameEventType(val label: String, val isPlayerEvent: Boolean = false) 
     ACTIVATED("効果を発動した"),
     ATTACK_DECLARED("攻撃宣言した"),
     LEFT_FIELD("フィールドを離れた"),
+    TARGETED("効果の対象になった"),
     DAMAGE_TAKEN("ダメージを受けた", isPlayerEvent = true),
     LIFE_RECOVERED("ライフを回復した", isPlayerEvent = true),
     CARD_DRAWN("カードをドローした", isPlayerEvent = true);
 
     companion object {
         val all: List<GameEventType> get() = entries
+    }
+}
+
+/** 出来事の見かた。「〜した場合」と「〜したターン」を書き分ける。 */
+@Serializable
+enum class EventWindow(val label: String, val suffix: String) {
+    /** その出来事が起きた瞬間に発動する（誘発効果になる）。 */
+    IMMEDIATE("〜した場合（その瞬間に発動）", "場合"),
+
+    /** その出来事がこのターンに起きていれば満たす（発動条件として見る）。 */
+    THIS_TURN("〜したターン（このターン中ずっと）", "ターン");
+
+    companion object {
+        val all: List<EventWindow> get() = entries
+    }
+}
+
+/** フェイズの進め方を変える効果。 */
+@Serializable
+enum class PhaseAdvance(val label: String) {
+    SKIP_PHASE("そのフェイズをスキップする"),
+    TO_END_PHASE("エンドフェイズにする"),
+    END_TURN("ターンを終了する");
+
+    companion object {
+        val all: List<PhaseAdvance> get() = entries
     }
 }
 

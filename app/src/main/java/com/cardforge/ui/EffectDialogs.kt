@@ -37,6 +37,7 @@ private enum class ActionType(val label: String, val usesScope: Boolean) {
     GRANT_PROTECTION("耐性を与える（永続向き）", true),
     PREVENT_ATTACK("攻撃できなくする（永続向き）", true),
     GRANT_EFFECT("効果を与える（永続向き）", true),
+    ADVANCE_PHASE("フェイズ・ターンを進める", false),
     REVEAL("カードを相手に見せる（公開する）", true),
     NEGATE("発動を無効にし破壊する", false)
 }
@@ -61,6 +62,7 @@ private fun typeOf(action: Action): ActionType = when (action) {
     is GrantProtectionAction -> ActionType.GRANT_PROTECTION
     is PreventAttackAction -> ActionType.PREVENT_ATTACK
     is GrantEffectAction -> ActionType.GRANT_EFFECT
+    is AdvancePhaseAction -> ActionType.ADVANCE_PHASE
     // 旧データ用。編集画面では【制限】として扱う。
     is RestrictSummonAction -> ActionType.NEGATE
     is RevealAction -> ActionType.REVEAL
@@ -174,6 +176,9 @@ fun ActionDialog(
     var granted by remember {
         mutableStateOf((initial as? GrantEffectAction)?.granted ?: EffectClause())
     }
+    var advance by remember {
+        mutableStateOf((initial as? AdvancePhaseAction)?.kind ?: PhaseAdvance.SKIP_PHASE)
+    }
     var showGrantedAction by remember { mutableStateOf<Int?>(null) }
     var addingGrantedAction by remember { mutableStateOf(false) }
     var countValue by remember {
@@ -212,6 +217,7 @@ fun ActionDialog(
         ActionType.GRANT_PROTECTION -> GrantProtectionAction(scope, protection)
         ActionType.PREVENT_ATTACK -> PreventAttackAction(scope)
         ActionType.GRANT_EFFECT -> GrantEffectAction(scope, granted)
+        ActionType.ADVANCE_PHASE -> AdvancePhaseAction(advance)
         ActionType.REVEAL -> RevealAction(scope, revealDuration)
         ActionType.NEGATE -> NegateAction
     }
@@ -392,6 +398,19 @@ fun ActionDialog(
                         Chip("＋ 与える効果の文を追加") { addingGrantedAction = true }
                     }
 
+                    ActionType.ADVANCE_PHASE -> {
+                        HorizontalDivider()
+                        Dropdown("どう進めるか", PhaseAdvance.all, advance, { it.label }) {
+                            advance = it
+                        }
+                        Text(
+                            "効果の処理が全て終わってから適用されます。" +
+                                "相手ターンに使いたい場合は【誘発即時】を付けてください。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
                     ActionType.REVEAL -> {
                         HorizontalDivider()
                         Dropdown(
@@ -458,12 +477,13 @@ fun ActionDialog(
 // ===========================================================================
 
 private enum class ConditionType(val label: String) {
-    EVENT("〜した場合（出来事で発動する）"),
+    EVENT("〜した場合／〜したターン（出来事）"),
     SELF_ZONE("このカードが〇〇にある"),
     PHASE("〇〇フェイズである"),
     EXISTS("特定のカードが存在する"),
     LIFE("ライフが一定値である"),
-    ZONE_COUNT("領域の枚数が一定値である")
+    ZONE_COUNT("領域の枚数が一定値である"),
+    ANY_OF("いずれかを満たす（または）")
 }
 
 @Composable
@@ -482,6 +502,7 @@ fun ConditionDialog(
                 is CardExistsCondition -> ConditionType.EXISTS
                 is LifeCondition -> ConditionType.LIFE
                 is ZoneCountCondition -> ConditionType.ZONE_COUNT
+                is AnyOfCondition -> ConditionType.ANY_OF
                 null -> ConditionType.EVENT
             }
         )
@@ -507,6 +528,18 @@ fun ConditionDialog(
     var eventCause by remember {
         mutableStateOf((initial as? EventCondition)?.cause ?: CauseFilter.ANY)
     }
+    var eventWindow by remember {
+        mutableStateOf((initial as? EventCondition)?.window ?: EventWindow.IMMEDIATE)
+    }
+    var eventSourceFilters by remember {
+        mutableStateOf((initial as? EventCondition)?.sourceFilters ?: emptyList())
+    }
+    var showSourceFilter by remember { mutableStateOf(false) }
+    var anyOf by remember {
+        mutableStateOf((initial as? AnyOfCondition)?.conditions ?: emptyList())
+    }
+    var editingAnyOf by remember { mutableStateOf<Int?>(null) }
+    var addingAnyOf by remember { mutableStateOf(false) }
     var showEventFilter by remember { mutableStateOf(false) }
     var atLeast by remember { mutableIntStateOf((initial as? CardExistsCondition)?.atLeast ?: 1) }
     var negate by remember { mutableStateOf((initial as? CardExistsCondition)?.negate ?: false) }
@@ -551,8 +584,12 @@ fun ConditionDialog(
             who = eventWho,
             selfOnly = eventSelfOnly,
             filters = if (eventSelfOnly) emptyList() else eventFilters,
-            cause = eventCause
+            cause = eventCause,
+            window = eventWindow,
+            sourceFilters = eventSourceFilters
         )
+
+        ConditionType.ANY_OF -> AnyOfCondition(anyOf)
 
         ConditionType.SELF_ZONE -> SelfZoneCondition(selfZones)
         ConditionType.PHASE -> PhaseCondition(phases)
@@ -586,6 +623,9 @@ fun ConditionDialog(
                         )
                         Dropdown("出来事", GameEventType.all, event, { it.label }) { event = it }
                         Dropdown(
+                            "いつまで見るか", EventWindow.all, eventWindow, { it.label }
+                        ) { eventWindow = it }
+                        Dropdown(
                             "何が原因で起きたか",
                             CauseFilter.all,
                             eventCause,
@@ -597,6 +637,20 @@ fun ConditionDialog(
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                        Text(
+                            "出来事を起こしたカードを限定する（任意）",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        FlowRowSimple {
+                            eventSourceFilters.forEachIndexed { index, filter ->
+                                Chip(filterChipLabel(filter, master) + " ✕", selected = true) {
+                                    eventSourceFilters = eventSourceFilters.toMutableList()
+                                        .also { it.removeAt(index) }
+                                }
+                            }
+                            Chip("＋ 起こした側の条件") { showSourceFilter = true }
+                        }
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Checkbox(
                                 checked = eventSelfOnly,
@@ -628,6 +682,43 @@ fun ConditionDialog(
                                 }
                             }
                         }
+                    }
+
+                    ConditionType.ANY_OF -> {
+                        HorizontalDivider()
+                        Text(
+                            "並べた条件のうち、どれか1つを満たせば発動できます。" +
+                                "「かつ」で結びたい条件は、条件を分けて追加してください。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        anyOf.forEachIndexed { position, inner ->
+                            Surface(
+                                color = Surface2,
+                                shape = MaterialTheme.shapes.small,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    Modifier.padding(start = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        EffectTextRenderer.conditionToText(inner, master),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .padding(vertical = 10.dp)
+                                    )
+                                    TextButton(onClick = { editingAnyOf = position }) {
+                                        Text("編集")
+                                    }
+                                    TextButton(onClick = {
+                                        anyOf = anyOf.toMutableList().also { it.removeAt(position) }
+                                    }) { Text("削除") }
+                                }
+                            }
+                        }
+                        Chip("＋ 「または」でつなぐ条件を追加") { addingAnyOf = true }
                     }
 
                     ConditionType.SELF_ZONE -> {
@@ -716,6 +807,36 @@ fun ConditionDialog(
             onConfirm = {
                 eventFilters = eventFilters + it
                 showEventFilter = false
+            }
+        )
+    }
+
+    if (showSourceFilter) {
+        FilterDialog(
+            master = master,
+            onDismiss = { showSourceFilter = false },
+            onConfirm = {
+                eventSourceFilters = eventSourceFilters + it
+                showSourceFilter = false
+            }
+        )
+    }
+
+    // 「または」でつなぐ条件は、同じダイアログをもう一段開いて作る。
+    if (addingAnyOf || editingAnyOf != null) {
+        val position = editingAnyOf
+        ConditionDialog(
+            master = master,
+            initial = position?.let { anyOf.getOrNull(it) },
+            onDismiss = {
+                addingAnyOf = false
+                editingAnyOf = null
+            },
+            onConfirm = { inner ->
+                anyOf = if (position == null) anyOf + inner
+                else anyOf.toMutableList().also { it[position] = inner }
+                addingAnyOf = false
+                editingAnyOf = null
             }
         )
     }

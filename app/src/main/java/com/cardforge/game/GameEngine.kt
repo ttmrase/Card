@@ -18,7 +18,9 @@ data class GameEvent(
     /** 何がこの出来事を起こしたか。[GameEngine.emit] が解決中の原因を書き込む。 */
     val cause: EventCause = EventCause.UNKNOWN,
     /** [EventCause.EFFECT] のとき、その効果を発動したプレイヤー。 */
-    val causePlayer: Int? = null
+    val causePlayer: Int? = null,
+    /** その出来事を起こしたカード。「罠カードの対象に取られた」などの判定に使う。 */
+    val sourceCard: CardInstance? = null
 )
 
 /**
@@ -39,20 +41,41 @@ class GameEngine(
     /** いま処理している出来事の原因。[emit] が出来事に書き込む。 */
     private var causeKind = EventCause.UNKNOWN
     private var causePlayer: Int? = null
+    private var causeSource: CardInstance? = null
 
     /** [block] の中で起きた出来事に、この原因を付ける。 */
-    private inline fun <R> withCause(kind: EventCause, player: Int?, block: () -> R): R {
+    private inline fun <R> withCause(
+        kind: EventCause,
+        player: Int?,
+        source: CardInstance?,
+        block: () -> R
+    ): R {
         val prevKind = causeKind
         val prevPlayer = causePlayer
+        val prevSource = causeSource
         causeKind = kind
         causePlayer = player
+        causeSource = source
         try {
             return block()
         } finally {
             causeKind = prevKind
             causePlayer = prevPlayer
+            causeSource = prevSource
         }
     }
+
+    /** 効果の処理が終わってから適用する、フェイズの進め方の変更。 */
+    private var pendingAdvance: PhaseAdvance? = null
+
+    /** 発動の入れ子の深さ。0 に戻ったときに [pendingAdvance] を適用する。 */
+    private var activationDepth = 0
+
+    /**
+     * いま発動を処理している最中のカード。
+     * 解決の途中で同じカードをもう一度発動できてしまうのを防ぐ。
+     */
+    private val resolvingCards = mutableSetOf<String>()
 
     /** 効果が効果を呼ぶ連鎖の暴走を防ぐための深さ制限。 */
     private var triggerDepth = 0
@@ -130,6 +153,7 @@ class GameEngine(
         inst.turnProtections.clear()
         inst.attackLockedThisTurn = false
         inst.revealedUntilTurn = -1
+        inst.summonedByUid = null
     }
 
     fun applyPosition(inst: CardInstance, position: Position) {
@@ -195,10 +219,11 @@ class GameEngine(
         if (wasOnField) {
             val cause = if (byBattle) EventCause.BATTLE else causeKind
             val by = if (byBattle) null else causePlayer
+            val from = if (byBattle) null else causeSource
             emit(
-                GameEvent(GameEventType.DESTROYED, loc.player.index, inst, cause, by),
-                GameEvent(GameEventType.SENT_TO_GRAVEYARD, loc.player.index, inst, cause, by),
-                GameEvent(GameEventType.LEFT_FIELD, loc.player.index, inst, cause, by)
+                GameEvent(GameEventType.DESTROYED, loc.player.index, inst, cause, by, from),
+                GameEvent(GameEventType.SENT_TO_GRAVEYARD, loc.player.index, inst, cause, by, from),
+                GameEvent(GameEventType.LEFT_FIELD, loc.player.index, inst, cause, by, from)
             )
         }
     }
@@ -390,10 +415,24 @@ class GameEngine(
 
         is PositionFilter -> inst.displayPosition == filter.position
         is NameFilter -> inst.card.name.contains(filter.text, ignoreCase = true)
+        // 「このカードの効果によって特殊召喚された」は、誰の効果かが要るので
+        // matchesAll でしか判定できない。単独では常に満たすものとして扱う。
+        is SummonedByThisFilter -> true
     }
 
-    fun matchesAll(inst: CardInstance, filters: List<CardFilter>): Boolean =
-        filters.all { matches(inst, it) }
+    fun matchesAll(
+        inst: CardInstance,
+        filters: List<CardFilter>,
+        source: CardInstance? = null
+    ): Boolean = filters.all { filter ->
+        if (filter is SummonedByThisFilter) {
+            // 「このカードの効果によって特殊召喚された」かどうか。
+            val matched = source != null && inst.summonedByUid == source.uid
+            if (filter.enabled) matched else !matched
+        } else {
+            matches(inst, filter)
+        }
+    }
 
     /** [scope] が指す候補カードを列挙する。裏側のカードは中身を見るフィルタでは選べない。 */
     fun candidates(
@@ -410,7 +449,7 @@ class GameEngine(
             .flatMap { zoneCards(it, scope.zone) }
             .filter { !(hidesInfo && it.faceDown) }
             .filter { !(respectProtection && isUntouchableBy(it, controller)) }
-            .filter { matchesAll(it, scope.filters) }
+            .filter { matchesAll(it, scope.filters, source) }
     }
 
     private suspend fun resolveTargets(
@@ -423,7 +462,7 @@ class GameEngine(
         if (scope.selfOnly) return pool
         if (pool.isEmpty()) return emptyList()
         val want = effectiveCount(scope, controller, source)
-        return when (scope.selection) {
+        val chosen = when (scope.selection) {
             SelectionMode.ALL -> pool
             SelectionMode.RANDOM -> pool.shuffled().take(want)
             SelectionMode.CHOOSE -> {
@@ -434,6 +473,17 @@ class GameEngine(
                 interaction.chooseCards(controller.index, prompt, pool, least, n)
             }
         }
+
+        // 「選んで」＝対象を取る。選ばれたカードに知らせる。
+        if (scope.selection == SelectionMode.CHOOSE && chosen.isNotEmpty()) {
+            emit(
+                *chosen.map { target ->
+                    val owner = state.players.firstOrNull { locate(target)?.player === it }
+                    GameEvent(GameEventType.TARGETED, owner?.index ?: controller.index, target)
+                }.toTypedArray()
+            )
+        }
+        return chosen
     }
 
     /** デッキから選んだ後はデッキをシャッフルする。 */
@@ -478,8 +528,21 @@ class GameEngine(
     ): Boolean =
         conditions.all { condition ->
             when (condition) {
-                is EventCondition -> event != null && holder != null &&
-                    matchesEvent(condition, event, holder, controller)
+                is AnyOfCondition -> condition.conditions.isEmpty() ||
+                    condition.conditions.any {
+                        conditionsMet(listOf(it), controller, holder, event)
+                    }
+
+                is EventCondition -> when {
+                    holder == null -> false
+                    // 「〜したターン」は、このターンに起きていれば満たす。
+                    condition.window == EventWindow.THIS_TURN ->
+                        state.eventsThisTurn.any {
+                            matchesEvent(condition, it, holder, controller)
+                        }
+
+                    else -> event != null && matchesEvent(condition, event, holder, controller)
+                }
 
                 is CardExistsCondition -> {
                     val count = candidates(condition.scope, controller, holder).size
@@ -512,6 +575,11 @@ class GameEngine(
     ): Boolean {
         if (condition.event != event.type) return false
         if (!matchesCause(condition.cause, event, controller)) return false
+        // 「罠カードの対象に取られた」のように、出来事を起こしたカードを限定する。
+        if (condition.sourceFilters.isNotEmpty()) {
+            val from = event.sourceCard ?: return false
+            if (!matchesAll(from, condition.sourceFilters)) return false
+        }
         if (condition.selfOnly) return event.card === holder
 
         val ownerMatches = when (condition.who) {
@@ -599,7 +667,7 @@ class GameEngine(
         costs: List<Cost>,
         controller: PlayerState,
         excluding: CardInstance?
-    ): Boolean = withCause(EventCause.EFFECT, controller.index) {
+    ): Boolean = withCause(EventCause.EFFECT, controller.index, excluding) {
         payCostsInner(costs, controller, excluding)
     }
 
@@ -875,6 +943,8 @@ class GameEngine(
                     destination.monsterZones[zone] = target
                     applyPosition(target, position)
                     target.summonedOnTurn = state.turn
+                    // 「このカードの効果によって特殊召喚された」の判定に使う。
+                    target.summonedByUid = source?.uid
                     log("${destination.name}は「${target.card.name}」を特殊召喚した。")
                     emit(
                         GameEvent(GameEventType.SPECIAL_SUMMONED, destination.index, target),
@@ -994,6 +1064,13 @@ class GameEngine(
             // 効果の付与は【発動タイプ】が「永続」のときだけ働く。
             is GrantEffectAction -> log("効果の付与は「永続」の効果に書いてください。")
 
+            is AdvancePhaseAction -> {
+                // 効果の処理の途中でフェイズを動かすと壊れるので、
+                // 全ての処理が終わってから適用する。
+                pendingAdvance = action.kind
+                log("この効果の処理のあと、${action.kind.label}。")
+            }
+
             is RevealAction -> reveal(action.scope, action.duration, controller, source)
 
             NegateAction -> {
@@ -1067,6 +1144,8 @@ class GameEngine(
      */
     fun activatableClauses(inst: CardInstance, controller: PlayerState): List<Int> {
         val effect = effectOf(inst) ?: return emptyList()
+        // 発動の処理中のカードは、その解決が終わるまで発動し直せない。
+        if (inst.uid in resolvingCards) return emptyList()
 
         return effect.clauses.indices.filter { index ->
             val clause = effect.clauses[index]
@@ -1127,7 +1206,7 @@ class GameEngine(
         clause: EffectClause,
         controller: PlayerState,
         source: CardInstance?
-    ) = withCause(EventCause.EFFECT, controller.index) {
+    ) = withCause(EventCause.EFFECT, controller.index, source) {
         runClauseInner(clause, controller, source)
     }
 
@@ -1521,6 +1600,7 @@ class GameEngine(
      */
     fun canActivateCardItself(inst: CardInstance, controller: PlayerState): Boolean {
         if (inst.card.kind == CardKind.MONSTER) return false
+        if (inst.uid in resolvingCards) return false
         val effect = inst.card.effect ?: return false
         if (!effect.supportsCardActivation()) return false
         // 表側で場に出ているカードは、既に発動を終えている。
@@ -1561,6 +1641,21 @@ class GameEngine(
      * 「発動時」の効果をまとめて処理してから【発動後】の処理を行う。
      */
     private suspend fun activateCardItself(
+        inst: CardInstance,
+        controller: PlayerState
+    ): Boolean {
+        activationDepth++
+        val fresh = resolvingCards.add(inst.uid)
+        try {
+            return activateCardItselfInner(inst, controller)
+        } finally {
+            if (fresh) resolvingCards.remove(inst.uid)
+            activationDepth--
+            if (activationDepth == 0) flushPendingAdvance()
+        }
+    }
+
+    private suspend fun activateCardItselfInner(
         inst: CardInstance,
         controller: PlayerState
     ): Boolean {
@@ -1668,6 +1763,53 @@ class GameEngine(
     ): Boolean = activateClause(inst, clauseIndex, controller)
 
     private suspend fun activateClause(
+        inst: CardInstance,
+        clauseIndex: Int,
+        controller: PlayerState
+    ): Boolean {
+        activationDepth++
+        val fresh = resolvingCards.add(inst.uid)
+        try {
+            return activateClauseInner(inst, clauseIndex, controller)
+        } finally {
+            if (fresh) resolvingCards.remove(inst.uid)
+            activationDepth--
+            if (activationDepth == 0) flushPendingAdvance()
+        }
+    }
+
+    /**
+     * 溜めておいたフェイズの進め方の変更を適用する。
+     * 効果の処理の途中で盤面の進行を動かさないための仕組み。
+     */
+    private suspend fun flushPendingAdvance() {
+        val kind = pendingAdvance ?: return
+        pendingAdvance = null
+        if (state.finished) return
+        when (kind) {
+            PhaseAdvance.SKIP_PHASE -> {
+                log("${state.phase.label}をスキップした。")
+                advancePhase()
+            }
+
+            PhaseAdvance.TO_END_PHASE -> {
+                if (state.phase != Phase.END) {
+                    log("エンドフェイズになった。")
+                    var guard = 0
+                    while (state.phase != Phase.END && !state.finished && guard++ < 5) {
+                        advancePhase()
+                    }
+                }
+            }
+
+            PhaseAdvance.END_TURN -> {
+                log("ターンを終了した。")
+                endTurnImmediately()
+            }
+        }
+    }
+
+    private suspend fun activateClauseInner(
         inst: CardInstance,
         clauseIndex: Int,
         controller: PlayerState
@@ -1851,7 +1993,12 @@ class GameEngine(
             // 出来事の側で原因を指定していなければ、いま処理中の原因を付ける。
             val event =
                 if (raw.cause != EventCause.UNKNOWN) raw
-                else raw.copy(cause = causeKind, causePlayer = causePlayer)
+                else raw.copy(
+                    cause = causeKind,
+                    causePlayer = causePlayer,
+                    sourceCard = causeSource
+                )
+            state.eventsThisTurn += event
             triggerDepth++
             try {
                 dispatch(event)
@@ -2240,6 +2387,7 @@ class GameEngine(
         state.turnPlayerIndex = 1 - state.turnPlayerIndex
         state.turn += 1
 
+        state.eventsThisTurn.clear()
         state.players.forEach { player ->
             player.normalSummonUsed = false
             player.activationsThisTurn.clear()

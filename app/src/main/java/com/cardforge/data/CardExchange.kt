@@ -97,7 +97,13 @@ object IdRemapper {
     private fun remapCondition(condition: Condition, m: Map<String, String>): Condition =
         when (condition) {
             is CardExistsCondition -> condition.copy(scope = remapScope(condition.scope, m))
-            is EventCondition -> condition.copy(filters = condition.filters.map { remapFilter(it, m) })
+            is EventCondition -> condition.copy(
+                filters = condition.filters.map { remapFilter(it, m) },
+                sourceFilters = condition.sourceFilters.map { remapFilter(it, m) }
+            )
+
+            is AnyOfCondition ->
+                condition.copy(conditions = condition.conditions.map { remapCondition(it, m) })
             else -> condition
         }
 
@@ -211,7 +217,12 @@ object IdRemapper {
     private fun collectCondition(condition: Condition, ids: MutableSet<String>) {
         when (condition) {
             is CardExistsCondition -> collectScope(condition.scope, ids)
-            is EventCondition -> collectFilters(condition.filters, ids)
+            is EventCondition -> {
+                collectFilters(condition.filters, ids)
+                collectFilters(condition.sourceFilters, ids)
+            }
+
+            is AnyOfCondition -> condition.conditions.forEach { collectCondition(it, ids) }
             else -> Unit
         }
     }

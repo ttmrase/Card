@@ -36,6 +36,12 @@ class CardInstance(
     var attackLockedThisTurn by mutableStateOf(false)
 
     /**
+     * このカードを特殊召喚した効果を持つカードの uid。
+     * 「このカードの効果によって特殊召喚されたモンスター」の判定に使う。
+     */
+    var summonedByUid by mutableStateOf<String?>(null)
+
+    /**
      * 公開されている（相手にも見えている）ターン。
      * [PERMANENT_REVEAL] ならその領域にある限りずっと公開。-1 は非公開。
      */
@@ -148,6 +154,12 @@ class GameState(
     var finished by mutableStateOf(false)
 
     val log: SnapshotStateList<String> = mutableStateListOf()
+
+    /**
+     * このターンに起きた出来事。
+     * 「〜されたターン」という条件を見るために残しておく。
+     */
+    val eventsThisTurn: MutableList<GameEvent> = mutableListOf()
 
     val turnPlayer: PlayerState get() = players[turnPlayerIndex]
     val nonTurnPlayer: PlayerState get() = players[1 - turnPlayerIndex]

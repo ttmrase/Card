@@ -32,6 +32,8 @@ fun filterChipLabel(filter: CardFilter, master: MasterData): String = when (filt
     is DefFilter -> "守備力${filter.value}${filter.cmp.label}"
     is PositionFilter -> filter.position.label
     is NameFilter -> "名前に「${filter.text}」"
+    is SummonedByThisFilter ->
+        if (filter.enabled) "このカードの効果で特殊召喚された" else "それ以外"
 }
 
 private enum class FilterType(val label: String) {
@@ -43,7 +45,8 @@ private enum class FilterType(val label: String) {
     ATK("攻撃力"),
     DEF("守備力"),
     POSITION("表示形式"),
-    NAME("カード名")
+    NAME("カード名"),
+    SUMMONED_BY_THIS("このカードの効果で特殊召喚された")
 }
 
 @Composable
@@ -72,6 +75,7 @@ fun FilterDialog(
         FilterType.DEF -> DefFilter(cmp, value)
         FilterType.POSITION -> PositionFilter(position)
         FilterType.NAME -> if (name.isBlank()) null else NameFilter(name.trim())
+        FilterType.SUMMONED_BY_THIS -> SummonedByThisFilter()
     }
 
     AlertDialog(
@@ -124,6 +128,14 @@ fun FilterDialog(
                         onValueChange = { name = it },
                         label = { Text("カード名に含まれる文字") },
                         singleLine = true
+                    )
+
+                    FilterType.SUMMONED_BY_THIS -> Text(
+                        "この効果を持つカードの効果で特殊召喚されたカードだけを指します。" +
+                            "「このカードの効果によって特殊召喚されたモンスターは〜」" +
+                            "と書きたいときに使います。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }

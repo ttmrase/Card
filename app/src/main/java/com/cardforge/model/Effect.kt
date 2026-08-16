@@ -46,6 +46,14 @@ data class PositionFilter(val position: Position) : CardFilter
 @SerialName("name")
 data class NameFilter(val text: String) : CardFilter
 
+/**
+ * この効果を持つカードによって特殊召喚されたカード。
+ * 「このカードの効果によって特殊召喚されたモンスター」と書きたいときに使う。
+ */
+@Serializable
+@SerialName("summonedByThis")
+data class SummonedByThisFilter(val enabled: Boolean = true) : CardFilter
+
 // ---------------------------------------------------------------------------
 // 主語・目的語・修飾語をひとまとめにした「対象指定」。
 // 例) 『相手フィールドの』『闇属性モンスター』『1体』を『選んで』
@@ -171,6 +179,14 @@ data class RestrictSummonAction(
     /** 「このカードを発動するターン」と書きたいときに true。 */
     val fromActivation: Boolean = true
 ) : Action
+
+/**
+ * フェイズやターンの進み方を変える述語。
+ * 効果の処理が全て終わってから適用される。
+ */
+@Serializable
+@SerialName("advancePhase")
+data class AdvancePhaseAction(val kind: PhaseAdvance = PhaseAdvance.SKIP_PHASE) : Action
 
 /**
  * 「〜は次の効果を得る」という、効果そのものを与える述語。
@@ -334,8 +350,30 @@ data class EventCondition(
      * 「相手の効果によって」のように、その出来事の原因を限定する。
      * [selfOnly] が true でもこの指定は見る。
      */
-    val cause: CauseFilter = CauseFilter.ANY
+    val cause: CauseFilter = CauseFilter.ANY,
+    /**
+     * 「〜した場合」か「〜したターン」か。
+     * [EventWindow.THIS_TURN] にすると誘発効果ではなく、
+     * 「このターンにそれが起きていれば発動できる」という条件になる。
+     */
+    val window: EventWindow = EventWindow.IMMEDIATE,
+    /**
+     * その出来事を起こしたカードを限定する。
+     * 「罠カードの対象に取られた場合」のように書きたいときに使う。
+     */
+    val sourceFilters: List<CardFilter> = emptyList()
 ) : Condition
+
+/** 並べた条件のうち、どれか1つを満たせばよい。 */
+@Serializable
+@SerialName("anyOf")
+data class AnyOfCondition(val conditions: List<Condition> = emptyList()) : Condition
+
+/** 「または」の入れ子を開いて、全ての条件を平らに並べる。 */
+fun flatten(conditions: List<Condition>): List<Condition> =
+    conditions.flatMap { condition ->
+        if (condition is AnyOfCondition) flatten(condition.conditions) else listOf(condition)
+    }
 
 /**
  * この効果を持つカード自身が、指定した領域にある場合。
@@ -656,11 +694,16 @@ data class EffectText(
 
     /** [index] 番目の効果が発動できるフェイズ。指定が無ければ空。 */
     fun phasesFor(index: Int): List<Phase> =
-        conditionsFor(index).filterIsInstance<PhaseCondition>().flatMap { it.phases }
+        flatten(conditionsFor(index)).filterIsInstance<PhaseCondition>().flatMap { it.phases }
 
-    /** [index] 番目の効果が持つイベント条件（誘発条件）。 */
+    /**
+     * [index] 番目の効果が持つ誘発条件。
+     * 「〜したターン」は発動条件なので誘発条件には数えない。
+     */
     fun triggersFor(index: Int): List<EventCondition> =
-        conditionsFor(index).filterIsInstance<EventCondition>()
+        flatten(conditionsFor(index))
+            .filterIsInstance<EventCondition>()
+            .filter { it.window == EventWindow.IMMEDIATE }
 
     /** イベント条件を持つ効果は誘発効果、持たない効果は起動効果。 */
     fun isTriggered(index: Int): Boolean =
