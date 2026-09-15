@@ -113,6 +113,7 @@ object EffectTextRenderer {
             return when (it) {
                 TriggerCardRef.EVENT_CARD -> "その出来事の対象になったカード"
                 TriggerCardRef.SOURCE_CARD -> "その相手のカード"
+                TriggerCardRef.LAST_HANDLED -> "直前の効果で扱ったカード"
             }
         }
         val prefix = zonePrefix(scope.who, scope.zoneList)

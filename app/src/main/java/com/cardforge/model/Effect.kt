@@ -74,7 +74,13 @@ data class AffectedNameFilter(val exclude: Boolean = false) : CardFilter
 @Serializable
 enum class TriggerCardRef(val label: String) {
     EVENT_CARD("その出来事の対象になったカード"),
-    SOURCE_CARD("その出来事の相手側のカード");
+    SOURCE_CARD("その出来事の相手側のカード"),
+
+    /**
+     * 直前に効果が扱ったカード。効果をまたいで残るので、
+     * 「カードAで相手の手札を確認し、その後カードBでそれを破壊する」と書ける。
+     */
+    LAST_HANDLED("直前の効果で扱ったカード");
 
     companion object {
         val all: List<TriggerCardRef> get() = entries

@@ -1,5 +1,6 @@
 package com.cardforge.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -35,19 +36,19 @@ fun CardEditScreen(
     val master = library.master
     val original = remember(cardId) { cardId?.let { library.card(it) } }
 
-    var card by remember {
-        mutableStateOf(
-            original ?: CardDef(
-                id = newId(),
-                name = "",
-                kind = CardKind.MONSTER,
-                attributeId = master.attributes.firstOrNull()?.id,
-                raceId = master.races.firstOrNull()?.id,
-                atk = 1500,
-                def = 1200
-            )
+    // 書き換えたかどうかを見るための、開いたときの中身。
+    val initial = remember(cardId) {
+        original ?: CardDef(
+            id = newId(),
+            name = "",
+            kind = CardKind.MONSTER,
+            attributeId = master.attributes.firstOrNull()?.id,
+            raceId = master.races.firstOrNull()?.id,
+            atk = 1500,
+            def = 1200
         )
     }
+    var card by remember(cardId) { mutableStateOf(initial) }
     var managingMaster by remember { mutableStateOf<MasterKind?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
 
@@ -80,9 +81,17 @@ fun CardEditScreen(
         onBack()
     }
 
+    // 保存していない書き換えがあるまま画面を離れようとしたら、一度確かめる。
+    val unsaved = card != initial
+    var confirmingLeave by remember { mutableStateOf(false) }
+    fun leave() {
+        if (unsaved) confirmingLeave = true else onBack()
+    }
+    BackHandler(enabled = unsaved) { confirmingLeave = true }
+
     ScreenScaffold(
         title = if (original == null) "カードを作成" else "カードを編集",
-        onBack = onBack,
+        onBack = ::leave,
         actions = {
             IconButton(onClick = { save() }) {
                 Icon(Icons.Default.Check, contentDescription = "保存", tint = Gold)
@@ -609,6 +618,35 @@ fun CardEditScreen(
                 }
             },
             onDismiss = { managingMaster = null }
+        )
+    }
+
+    if (confirmingLeave) {
+        AlertDialog(
+            onDismissRequest = { confirmingLeave = false },
+            title = { Text("保存していない変更があります") },
+            text = {
+                Text(
+                    if (original == null) "このカードはまだ保存されていません。" +
+                        "このまま戻ると、入力した内容は残りません。"
+                    else "戻ると、このカードへの変更は保存されません。"
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmingLeave = false
+                    save()
+                }) { Text("保存して戻る", color = Gold) }
+            },
+            dismissButton = {
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(onClick = { confirmingLeave = false }) { Text("編集を続ける") }
+                    TextButton(onClick = {
+                        confirmingLeave = false
+                        onBack()
+                    }) { Text("破棄して戻る", color = MaterialTheme.colorScheme.error) }
+                }
+            }
         )
     }
 

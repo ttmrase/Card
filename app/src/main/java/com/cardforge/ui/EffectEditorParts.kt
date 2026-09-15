@@ -275,7 +275,7 @@ fun CardScopeEditor(
         }
 
         Text(
-            "誘発のきっかけになったカードを指す（任意）",
+            "特定のカードを名指しで指す（任意）",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -291,9 +291,15 @@ fun CardScopeEditor(
         }
         if (scope.triggerCard != null) {
             Text(
-                "【条件】に書いた出来事のカードだけを指します。" +
-                    "「攻撃してきたモンスターを破壊する」「そのカードを墓地へ送る」" +
-                    "のように使います。",
+                if (scope.triggerCard == TriggerCardRef.LAST_HANDLED) {
+                    "直前に効果が扱ったカードを指します。効果をまたいで残るので、" +
+                        "「カードAで相手の手札を確認し、その後カードBでそれを破壊する」" +
+                        "のように使えます。ターンが変わると忘れます。"
+                } else {
+                    "【条件】に書いた出来事のカードだけを指します。" +
+                        "「攻撃してきたモンスターを破壊する」「そのカードを墓地へ送る」" +
+                        "のように使います。"
+                },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

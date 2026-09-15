@@ -71,8 +71,24 @@ class GameEngine(
     /**
      * 直前の処理で扱ったカード。
      * 「破壊した数だけ」「同名カードを」のような、前の処理を受けた指定に使う。
+     * 効果ごとに数え直すので、1つの効果の中だけで見る。
      */
-    private var lastAffected: List<CardInstance> = emptyList()
+    private var affected: List<CardInstance> = emptyList()
+
+    /**
+     * 直前に効果が扱ったカード。[affected] と違い、効果をまたいで残る。
+     * 「カードAで相手の手札を確認し、その後カードBでそれを破壊する」と
+     * 書けるようにするためのもので、ターンが変わると忘れる。
+     */
+    private var lastHandled: List<CardInstance> = emptyList()
+
+    private var lastAffected: List<CardInstance>
+        get() = affected
+        set(value) {
+            affected = value
+            // 空にするのは効果の数え直しなので、覚えている方は消さない。
+            if (value.isNotEmpty()) lastHandled = value
+        }
 
     /** 効果の処理が終わってから適用する、フェイズの進め方の変更。 */
     private var pendingAdvance: PhaseAdvance? = null
@@ -583,12 +599,13 @@ class GameEngine(
 
         // 誘発のきっかけになったカードを指しているとき。
         scope.triggerCard?.let { ref ->
-            val event = currentTrigger ?: return emptyList()
             val picked = when (ref) {
-                TriggerCardRef.EVENT_CARD -> event.card
-                TriggerCardRef.SOURCE_CARD -> event.sourceCard
-            } ?: return emptyList()
-            return listOf(picked).filter { matchesAll(it, scope.filters, source) }
+                TriggerCardRef.EVENT_CARD -> listOfNotNull(currentTrigger?.card)
+                TriggerCardRef.SOURCE_CARD -> listOfNotNull(currentTrigger?.sourceCard)
+                // どこかに残っているカードだけを指す。
+                TriggerCardRef.LAST_HANDLED -> lastHandled.filter { locate(it) != null }
+            }
+            return picked.filter { matchesAll(it, scope.filters, source) }
         }
 
         val hidesInfo = needsCardInfo(scope.filters)
@@ -996,6 +1013,12 @@ class GameEngine(
         }
         val names = shown.joinToString("、") { "「${it.card.name}」" }
         log("${controller.name}は${names}を相手に見せた。")
+        // 「そのカードを破壊する」と後から書けるように、扱ったカードとして覚える。
+        lastAffected = shown
+        shown.forEach { card ->
+            val owner = locate(card)?.player?.index ?: controller.index
+            emit(GameEvent(GameEventType.REVEALED, owner, card))
+        }
         when (duration) {
             RevealDuration.MOMENT -> Unit
             RevealDuration.TURN -> shown.forEach { it.revealedUntilTurn = state.turn }
@@ -1509,6 +1532,7 @@ class GameEngine(
     private fun dependsOnPreviousStep(scope: CardScope?): Boolean {
         if (scope == null) return false
         if (scope.countSpec is AffectedCountValue) return true
+        if (scope.triggerCard == TriggerCardRef.LAST_HANDLED) return true
         fun uses(filters: List<CardFilter>): Boolean = filters.any {
             it is AffectedNameFilter ||
                 (it is AnyFilter && uses(it.filters)) ||
@@ -3243,6 +3267,7 @@ class GameEngine(
         state.turn += 1
 
         state.eventsThisTurn.clear()
+        lastHandled = emptyList()
         state.players.forEach { player ->
             player.normalSummonsUsed = 0
             player.normalSummonLimit = 1
