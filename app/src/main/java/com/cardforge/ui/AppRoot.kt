@@ -23,7 +23,9 @@ data class DuelConfig(
     val deckBId: String,
     val playerAName: String,
     val playerBName: String,
-    val versusAi: Boolean
+    val versusAi: Boolean,
+    /** 先攻のプレイヤー。null なら毎回ランダムに決める。 */
+    val firstPlayer: Int? = 0
 )
 
 @Composable
@@ -39,6 +41,7 @@ fun AppRoot(repository: LibraryRepository) {
 
     when (val current = stack.last()) {
         Screen.Home -> HomeScreen(
+            library = repository.library,
             onOpenCards = { push(Screen.CardList) },
             onOpenDecks = { push(Screen.DeckList) },
             onOpenMaster = { push(Screen.MasterData) },

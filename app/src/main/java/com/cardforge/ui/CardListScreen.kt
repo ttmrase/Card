@@ -287,6 +287,7 @@ private fun CardRow(
             CardArt(
                 imagePath = card.imagePath,
                 kind = card.kind,
+                seed = card.id,
                 modifier = Modifier.size(width = 48.dp, height = 64.dp)
             )
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {

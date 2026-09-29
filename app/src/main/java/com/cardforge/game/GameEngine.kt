@@ -20,7 +20,9 @@ data class GameEvent(
     /** [EventCause.EFFECT] のとき、その効果を発動したプレイヤー。 */
     val causePlayer: Int? = null,
     /** その出来事を起こしたカード。「罠カードの対象に取られた」などの判定に使う。 */
-    val sourceCard: CardInstance? = null
+    val sourceCard: CardInstance? = null,
+    /** ダメージ・回復の量やドローした枚数。演出で数字を見せるのに使う。 */
+    val amount: Int = 0
 )
 
 /**
@@ -1057,19 +1059,22 @@ class GameEngine(
         if (amount <= 0) return
         player.life -= amount
         log("${player.name}は${amount}ダメージを受けた。（残り${player.life.coerceAtLeast(0)}）")
+        val event = GameEvent(GameEventType.DAMAGE_TAKEN, player.index, source, amount = amount)
         if (player.life <= 0) {
+            // 決着の一撃は誘発を起こさないが、画面には見せる。
+            announce(event)
             player.life = 0
             finish(state.opponentOf(player).index, "${player.name}のライフが0になった")
             return
         }
-        emit(GameEvent(GameEventType.DAMAGE_TAKEN, player.index, source))
+        emit(event)
     }
 
     suspend fun recoverLife(player: PlayerState, amount: Int) {
         if (amount <= 0) return
         player.life += amount
         log("${player.name}はライフを${amount}回復した。（${player.life}）")
-        emit(GameEvent(GameEventType.LIFE_RECOVERED, player.index))
+        emit(GameEvent(GameEventType.LIFE_RECOVERED, player.index, amount = amount))
     }
 
     /** カードをドローする。デッキが尽きていたらそのプレイヤーの負け。 */
@@ -1083,7 +1088,7 @@ class GameEngine(
             player.hand.add(player.deck.removeAt(0))
         }
         log("${player.name}はカードを${count}枚ドローした。")
-        emit(GameEvent(GameEventType.CARD_DRAWN, player.index))
+        emit(GameEvent(GameEventType.CARD_DRAWN, player.index, amount = count))
     }
 
     fun finish(winnerIndex: Int?, reason: String) {
@@ -1091,7 +1096,7 @@ class GameEngine(
         state.finished = true
         state.winnerIndex = winnerIndex
         val winner = winnerIndex?.let { state.players[it].name } ?: "引き分け"
-        log("$reason 。 勝者: $winner")
+        log("$reason。勝者: $winner")
     }
 
     // =======================================================================
@@ -1121,8 +1126,12 @@ class GameEngine(
                     val leftField = isOnField(it)
                     log("「${it.card.name}」を除外した。")
                     banish(it)
-                    emit(GameEvent(GameEventType.BANISHED, owner, it))
-                    if (leftField) emit(GameEvent(GameEventType.LEFT_FIELD, owner, it))
+                    emit(
+                        *listOfNotNull(
+                            GameEvent(GameEventType.BANISHED, owner, it),
+                            GameEvent(GameEventType.LEFT_FIELD, owner, it).takeIf { leftField }
+                        ).toTypedArray()
+                    )
                 }
                 shuffleIfDeck(action.scope, controller)
             }
@@ -1148,8 +1157,12 @@ class GameEngine(
                     val leftField = isOnField(it)
                     log("「${it.card.name}」を墓地へ送った。")
                     sendToGraveyard(it)
-                    emit(GameEvent(GameEventType.SENT_TO_GRAVEYARD, owner, it))
-                    if (leftField) emit(GameEvent(GameEventType.LEFT_FIELD, owner, it))
+                    emit(
+                        *listOfNotNull(
+                            GameEvent(GameEventType.SENT_TO_GRAVEYARD, owner, it),
+                            GameEvent(GameEventType.LEFT_FIELD, owner, it).takeIf { leftField }
+                        ).toTypedArray()
+                    )
                 }
                 shuffleIfDeck(action.scope, controller)
             }
@@ -1158,8 +1171,12 @@ class GameEngine(
                 val targets = resolveTargets(action.scope, controller, "デッキに戻すカードを選択", source)
                 lastAffected = targets
                 targets.forEach {
+                    val owner = locate(it)?.player?.index ?: controller.index
+                    val leftField = isOnField(it)
                     log("「${it.card.name}」をデッキに戻した。")
                     returnToDeck(it, action.toBottom)
+                    // 手札に戻す場合と同じく、場から離れたことを知らせる。
+                    if (leftField) emit(GameEvent(GameEventType.LEFT_FIELD, owner, it))
                 }
                 shuffleIfDeck(action.scope, controller)
             }
@@ -2616,6 +2633,9 @@ class GameEngine(
      * 発動する。効果が効果を呼ぶ連鎖は [triggerDepth] で打ち切る。
      */
     private suspend fun emit(vararg events: GameEvent) {
+        // 「破壊された・墓地へ送られた・場を離れた」のように1枚の移動で重なる出来事は、
+        // 画面には最初の1つだけ見せる。
+        val shownLeaving = mutableSetOf<CardInstance>()
         for (raw in events) {
             if (state.finished || triggerDepth >= MAX_TRIGGER_DEPTH) return
             // 出来事の側で原因を指定していなければ、いま処理中の原因を付ける。
@@ -2627,7 +2647,7 @@ class GameEngine(
                     sourceCard = raw.sourceCard ?: causeSource
                 )
             state.eventsThisTurn += event
-            announce(event)
+            announce(event, shownLeaving)
             triggerDepth++
             try {
                 dispatch(event)
@@ -2637,26 +2657,69 @@ class GameEngine(
         }
     }
 
-    /** 出来事を画面向けの合図に変える。演出と音はこれを見て出す。 */
-    private fun announce(event: GameEvent) {
+    /**
+     * 出来事を画面向けの合図に変える。演出と音はこれを見て出す。
+     *
+     * [shownLeaving] は同じ移動で重なる出来事を1つにまとめるためのもの。
+     */
+    private fun announce(event: GameEvent, shownLeaving: MutableSet<CardInstance>? = null) {
+        val card = event.card
         val kind = when (event.type) {
             GameEventType.NORMAL_SUMMONED, GameEventType.SPECIAL_SUMMONED ->
                 BoardSignalKind.SUMMONED
 
             GameEventType.ACTIVATED -> BoardSignalKind.ACTIVATED
             GameEventType.ATTACK_DECLARED -> BoardSignalKind.ATTACK
+            GameEventType.TARGETED -> BoardSignalKind.TARGETED
             GameEventType.DESTROYED -> BoardSignalKind.DESTROYED
             GameEventType.SENT_TO_GRAVEYARD -> BoardSignalKind.SENT_TO_GRAVEYARD
             GameEventType.BANISHED -> BoardSignalKind.BANISHED
+            // 手札・デッキへ戻ったときは、これだけが来る。行き先で見せ方を変える。
+            GameEventType.LEFT_FIELD -> when (card?.let { locate(it)?.zone }) {
+                ZoneType.GRAVEYARD -> BoardSignalKind.SENT_TO_GRAVEYARD
+                ZoneType.BANISHED -> BoardSignalKind.BANISHED
+                ZoneType.HAND, ZoneType.DECK -> BoardSignalKind.RETURNED
+                null -> BoardSignalKind.VANISHED
+                else -> return
+            }
+
             GameEventType.DAMAGE_TAKEN -> BoardSignalKind.DAMAGE
             GameEventType.LIFE_RECOVERED -> BoardSignalKind.RECOVER
             GameEventType.CARD_DRAWN -> BoardSignalKind.DRAW
             // 「召喚・特殊召喚された」は上の2つと重なるので出さない。
             else -> return
         }
+        if (kind.isLeaving && card != null && shownLeaving != null) {
+            if (!shownLeaving.add(card)) return
+        }
         val who = state.players.getOrNull(event.playerIndex)?.name.orEmpty()
-        val what = event.card?.let { "「${it.card.name}」" } ?: who
-        state.signal(kind, what)
+        val what = card?.let { "「${it.card.name}」" } ?: who
+        // 攻撃宣言では、攻撃された側のモンスターを添える（直接攻撃なら無し）。
+        val target = if (event.type == GameEventType.ATTACK_DECLARED) {
+            event.sourceCard?.takeIf { it !== card && state.nonTurnPlayer.monsters.any { m -> m === it } }
+        } else null
+        val player = state.players.getOrNull(event.playerIndex)
+        val lifeBefore = when (kind) {
+            BoardSignalKind.DAMAGE -> player?.let { it.life + event.amount }
+            BoardSignalKind.RECOVER -> player?.let { it.life - event.amount }
+            else -> null
+        }
+        val detail = when (kind) {
+            BoardSignalKind.RETURNED ->
+                if (card?.let { locate(it)?.zone } == ZoneType.DECK) "$what（デッキへ）"
+                else "$what（手札へ）"
+
+            else -> what
+        }
+        state.signal(
+            kind = kind,
+            text = detail,
+            card = card,
+            playerIndex = event.playerIndex,
+            amount = event.amount,
+            target = target,
+            lifeBefore = lifeBefore
+        )
     }
 
     private suspend fun dispatch(event: GameEvent) {
@@ -3280,6 +3343,12 @@ class GameEngine(
         val player = state.turnPlayer
         state.phase = Phase.DRAW
         log("── ターン${state.turn}：${player.name}のターン ──")
+        state.signal(
+            BoardSignalKind.TURN_START,
+            "${player.name}のターン",
+            playerIndex = player.index,
+            amount = state.turn
+        )
         offerPhaseActivations()
         draw(player, 1)
         if (!state.finished) {

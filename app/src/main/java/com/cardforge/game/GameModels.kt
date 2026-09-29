@@ -87,19 +87,46 @@ class CardInstance(
 
 /** 画面に見せる出来事の種類。演出と音を選ぶのに使う。 */
 enum class BoardSignalKind(val label: String) {
+    TURN_START("ターン開始"),
     SUMMONED("召喚"),
     ACTIVATED("発動"),
     ATTACK("攻撃"),
+    TARGETED("対象"),
     DESTROYED("破壊"),
     SENT_TO_GRAVEYARD("墓地へ"),
     BANISHED("除外"),
+    RETURNED("戻る"),
+    VANISHED("消滅"),
     DAMAGE("ダメージ"),
     RECOVER("回復"),
-    DRAW("ドロー")
+    DRAW("ドロー");
+
+    /** そのカードが元の場所から去る出来事か。 */
+    val isLeaving: Boolean
+        get() = this == DESTROYED || this == SENT_TO_GRAVEYARD || this == BANISHED ||
+            this == RETURNED || this == VANISHED
 }
 
-/** 画面に見せる出来事1つ。 */
-data class BoardSignal(val id: Long, val kind: BoardSignalKind, val text: String)
+/**
+ * 画面に見せる出来事1つ。
+ *
+ * 演出を盤面の正しい場所に出せるよう、どのカード・どのプレイヤーの出来事かを添える。
+ */
+data class BoardSignal(
+    val id: Long,
+    val kind: BoardSignalKind,
+    val text: String,
+    /** 出来事の主役のカード。 */
+    val card: CardInstance? = null,
+    /** 出来事の起きた側のプレイヤー。ダメージなら受けた側。 */
+    val playerIndex: Int? = null,
+    /** ダメージ・回復の量、ドローした枚数。 */
+    val amount: Int = 0,
+    /** 攻撃宣言で、攻撃されたモンスター。直接攻撃なら null。 */
+    val target: CardInstance? = null,
+    /** ダメージ・回復の直前のライフ。演出が始まるまで前の値を見せるのに使う。 */
+    val lifeBefore: Int? = null
+)
 
 /**
  * 「このターン、〜以外を特殊召喚できない」のような制限。
@@ -213,10 +240,18 @@ class GameState(
 
     private var signalSeq = 0L
 
-    fun signal(kind: BoardSignalKind, text: String) {
-        signals.add(BoardSignal(signalSeq++, kind, text))
+    fun signal(
+        kind: BoardSignalKind,
+        text: String,
+        card: CardInstance? = null,
+        playerIndex: Int? = null,
+        amount: Int = 0,
+        target: CardInstance? = null,
+        lifeBefore: Int? = null
+    ) {
+        signals.add(BoardSignal(signalSeq++, kind, text, card, playerIndex, amount, target, lifeBefore))
         // 画面が見ていない場合に溜まり続けないよう、古いものは捨てる。
-        while (signals.size > 8) signals.removeAt(0)
+        while (signals.size > MAX_SIGNALS) signals.removeAt(0)
     }
 
     /**
@@ -233,6 +268,11 @@ class GameState(
     fun addLog(message: String) {
         log.add(message)
         if (log.size > 300) log.removeAt(0)
+    }
+
+    private companion object {
+        /** 演出が追いつかないときに溜めておく合図の上限。 */
+        const val MAX_SIGNALS = 40
     }
 }
 
@@ -265,6 +305,12 @@ object GameSetup {
         }
 
         state.addLog("デュエル開始！ 先攻は ${state.turnPlayer.name}。")
+        state.signal(
+            BoardSignalKind.TURN_START,
+            "${state.turnPlayer.name}のターン",
+            playerIndex = state.turnPlayerIndex,
+            amount = state.turn
+        )
         return state
     }
 

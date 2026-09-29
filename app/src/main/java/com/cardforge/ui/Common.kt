@@ -274,6 +274,7 @@ fun CardPreviewDialog(
                 CardArt(
                     imagePath = card.imagePath,
                     kind = card.kind,
+                    seed = card.id,
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(170.dp)
@@ -342,36 +343,4 @@ fun ConfirmDialog(
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("キャンセル") } }
     )
-}
-
-/** カードのイラスト枠。イラストが無いときは種類に応じた色で塗る。 */
-@Composable
-fun CardArt(
-    imagePath: String?,
-    kind: CardKind,
-    modifier: Modifier = Modifier,
-    contentScale: ContentScale = ContentScale.Crop
-) {
-    val image = rememberCardImage(imagePath)
-    Box(
-        modifier = modifier
-            .clip(RoundedCornerShape(6.dp))
-            .background(kindColor(kind).copy(alpha = 0.35f)),
-        contentAlignment = Alignment.Center
-    ) {
-        if (image != null) {
-            androidx.compose.foundation.Image(
-                bitmap = image,
-                contentDescription = null,
-                contentScale = contentScale,
-                modifier = Modifier.fillMaxSize()
-            )
-        } else {
-            Text(
-                kind.label,
-                fontSize = 10.sp,
-                color = Color(0xFFEDE9F7).copy(alpha = 0.7f)
-            )
-        }
-    }
 }

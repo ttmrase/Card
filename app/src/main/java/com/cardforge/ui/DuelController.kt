@@ -1,8 +1,10 @@
 package com.cardforge.ui
 
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.SnapshotStateList
 import com.cardforge.game.*
 import com.cardforge.model.Deck
 import com.cardforge.model.Library
@@ -58,7 +60,23 @@ class DuelController(
     var pendingPrompt by mutableStateOf<DuelPrompt?>(null)
         private set
 
-    var toast by mutableStateOf<String?>(null)
+    /**
+     * エンジンからのお知らせ。画面の上に順に出し、少しすると消える。
+     * 操作を止めないよう、ダイアログにはしない。
+     */
+    val toasts: SnapshotStateList<DuelToast> = mutableStateListOf()
+    private var toastSeq = 0L
+
+    fun toast(message: String) {
+        toasts.add(DuelToast(toastSeq++, message))
+        while (toasts.size > 4) toasts.removeAt(0)
+    }
+
+    /**
+     * 画面の演出が追いつくまで待つ。画面側が差し替える。
+     * AI はこれを1手ごとに呼んで、相手の動きを見届けられるようにする。
+     */
+    var awaitPresentation: suspend () -> Unit = {}
 
     /** AI が思考中かどうか。UI の操作を止めるために使う。 */
     var aiThinking by mutableStateOf(false)
@@ -80,7 +98,8 @@ class DuelController(
             deckA = deckA,
             nameA = config.playerAName,
             deckB = deckB,
-            nameB = config.playerBName
+            nameB = config.playerBName,
+            firstPlayer = config.firstPlayer ?: kotlin.random.Random.nextInt(2)
         )
 
         val ui = UiInteraction()
@@ -91,7 +110,9 @@ class DuelController(
         }
         engineRef = GameEngine(state, interaction)
         // 1手ごとに少し間を置いて、相手の動きを追えるようにする。
-        aiController = aiIndex?.let { AiController(engineRef, it, AI_PAUSE_MILLIS) }
+        aiController = aiIndex?.let {
+            AiController(engineRef, it, AI_PAUSE_MILLIS, pacer = { awaitPresentation() })
+        }
     }
 
     // -- プロンプトの解決 ---------------------------------------------------
@@ -125,8 +146,8 @@ class DuelController(
     }
 
     private companion object {
-        /** AI の1手ごとの間（ミリ秒）。 */
-        const val AI_PAUSE_MILLIS = 700L
+        /** AI の1手ごとの間（ミリ秒）。演出の終わりを待ったうえで、さらに置く間。 */
+        const val AI_PAUSE_MILLIS = 350L
     }
 
     private inner class UiInteraction : Interaction {
@@ -186,10 +207,13 @@ class DuelController(
         }
 
         override suspend fun notify(playerIndex: Int, message: String) {
-            toast = message
+            toast(message)
         }
     }
 }
+
+/** 画面の上に出すお知らせ1つ。同じ文面が続いても区別できるよう番号を持つ。 */
+data class DuelToast(val id: Long, val text: String)
 
 /** プレイヤーごとに、UI と AI のどちらに問い合わせるかを振り分ける。 */
 private class RoutingInteraction(

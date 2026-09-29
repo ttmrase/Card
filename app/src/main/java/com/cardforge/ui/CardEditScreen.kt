@@ -117,6 +117,7 @@ fun CardEditScreen(
                         CardArt(
                             imagePath = card.imagePath,
                             kind = card.kind,
+                            seed = card.id,
                             modifier = Modifier.size(width = 96.dp, height = 128.dp)
                         )
                         TextButton(onClick = {

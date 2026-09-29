@@ -75,7 +75,9 @@ class AiController(
     /**
      * 1手ごとの間。0 だとテストが速く回り、実機では相手の動きを追える。
      */
-    private val pauseMillis: Long = 0L
+    private val pauseMillis: Long = 0L,
+    /** 1手ごとに、画面の演出が追いつくのを待つ。テストでは何もしない。 */
+    private val pacer: suspend () -> Unit = {}
 ) {
 
     private val state get() = engine.state
@@ -83,7 +85,9 @@ class AiController(
 
     /** 相手の行動が見えるように、1手ごとに少し待つ。 */
     private suspend fun pause() {
-        if (pauseMillis > 0 && !state.finished) delay(pauseMillis)
+        if (state.finished) return
+        pacer()
+        if (pauseMillis > 0) delay(pauseMillis)
     }
 
     suspend fun playTurn() {

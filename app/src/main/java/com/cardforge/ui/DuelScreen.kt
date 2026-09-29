@@ -1,38 +1,56 @@
 package com.cardforge.ui
 
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.MusicOff
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.cardforge.data.LibraryRepository
+import com.cardforge.game.BoardSignal
+import com.cardforge.game.BoardSignalKind
 import com.cardforge.game.CardInstance
-import com.cardforge.game.GameEngine
+import com.cardforge.game.GameState
 import com.cardforge.game.PlayerState
 import com.cardforge.game.ownerIndexOf
 import com.cardforge.model.CardKind
 import com.cardforge.model.MasterData
 import com.cardforge.model.Phase
-import com.cardforge.model.Position
 import com.cardforge.text.EffectTextRenderer
 import com.cardforge.ui.theme.*
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.math.PI
+import kotlin.math.cos
+import kotlin.math.sin
 
 @Composable
 fun DuelScreen(
@@ -41,12 +59,53 @@ fun DuelScreen(
     onExit: () -> Unit
 ) {
     val library = repository.library
-    val master = library.master
-    val controller = remember { DuelController(library, config) }
+    // 「もう一度」で数を進めると、新しいデュエルとして作り直す。
+    var round by remember { mutableIntStateOf(0) }
+    key(round) {
+        val controller = remember { DuelController(library, config) }
+        DuelTable(
+            controller = controller,
+            master = library.master,
+            onExit = onExit,
+            onRematch = { round++ }
+        )
+    }
+}
+
+/**
+ * デュエルの画面本体。盤面・演出・ダイアログをまとめる。
+ * 作り済みの [controller] を受け取るので、決まった盤面を描いて確かめることもできる。
+ */
+@Composable
+fun DuelTable(
+    controller: DuelController,
+    master: MasterData,
+    onExit: () -> Unit,
+    onRematch: () -> Unit
+) {
     val state = controller.state
     val engine = controller.engine
+    val config = controller.config
     val scope = rememberCoroutineScope()
 
+    val fx = remember(controller) { DuelFx(state) }
+    val sounds = rememberDuelSounds()
+    var soundOn by remember { mutableStateOf(true) }
+    var caption by remember { mutableStateOf<BoardSignal?>(null) }
+
+    // 盤面の出来事を演出にする。音は演出の始まりに合わせて鳴らす。
+    LaunchedEffect(fx) {
+        fx.run { signal ->
+            if (soundOn) sounds.play(signal.kind)
+            if (signal.kind !in quietKinds) caption = signal
+        }
+    }
+    // AI は演出が追いつくのを待ってから次の手を打つ。
+    SideEffect {
+        controller.awaitPresentation = {
+            withTimeoutOrNull(12_000) { snapshotFlow { fx.idle }.first { it } }
+        }
+    }
     // 相手の手番になったら AI に打たせる。
     LaunchedEffect(state.turnPlayerIndex) {
         if (config.versusAi && state.turnPlayerIndex == controller.aiIndex && !state.finished) {
@@ -54,14 +113,23 @@ fun DuelScreen(
         }
     }
 
-    val bottomIndex = if (config.versusAi) controller.humanIndex else state.turnPlayerIndex
+    val idle by remember(fx) { derivedStateOf { fx.idle } }
+    val settled by remember(fx) { derivedStateOf { fx.settled } }
+
+    // 2人で遊ぶときは手番の側を下に出す。入れ替えは演出が済んでから。
+    var hotseatBottom by remember { mutableIntStateOf(state.turnPlayerIndex) }
+    LaunchedEffect(idle, state.turnPlayerIndex) {
+        if (idle) hotseatBottom = state.turnPlayerIndex
+    }
+    val bottomIndex = if (config.versusAi) controller.humanIndex else hotseatBottom
     val bottom = state.players[bottomIndex]
     val top = state.players[1 - bottomIndex]
 
     val interactive = state.turnPlayerIndex == bottomIndex &&
         !controller.aiThinking &&
         controller.pendingPrompt == null &&
-        !state.finished
+        !state.finished &&
+        settled
 
     var selected by remember { mutableStateOf<CardInstance?>(null) }
     var detail by remember { mutableStateOf<CardInstance?>(null) }
@@ -69,135 +137,186 @@ fun DuelScreen(
     var showLog by remember { mutableStateOf(false) }
     var zoneViewer by remember { mutableStateOf<Pair<String, List<CardInstance>>?>(null) }
     var showSurrender by remember { mutableStateOf(false) }
-    var soundOn by remember { mutableStateOf(true) }
 
-    ScreenScaffold(
-        title = "ターン${state.turn}　${state.phase.label}",
-        onBack = { showSurrender = true },
-        actions = {
-            TextButton(onClick = { soundOn = !soundOn }) {
-                Text(if (soundOn) "音ON" else "音OFF", fontSize = 12.sp)
-            }
-            TextButton(onClick = { showLog = !showLog }) { Text("ログ") }
-        }
-    ) { padding ->
+    // 攻撃を選んでいる途中でフェイズや手番が変わったら取り消す。
+    LaunchedEffect(state.phase, state.turnPlayerIndex) { attacker = null }
+
+    // 端末の「戻る」でいきなりデュエルを抜けないようにする。
+    // 攻撃の相手を選んでいる途中なら、まずそれを取り消す。
+    BackHandler {
+        if (attacker != null) attacker = null else showSurrender = true
+    }
+
+    // いま使えるカード。操作できるときだけ光らせる。
+    val usable: Set<CardInstance> = if (interactive) usableCards(controller, bottom) else emptySet()
+    val attackTargets: List<CardInstance> = if (attacker != null) engine.attackTargets() else emptyList()
+
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(Ink)
+    ) {
         Column(
             Modifier
-                .padding(padding)
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 10.dp, vertical = 6.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
+                .statusBarsPadding()
+                .navigationBarsPadding()
         ) {
-            // ---- 相手側 -------------------------------------------------
-            PlayerBanner(
-                player = top,
-                isTurnPlayer = state.turnPlayerIndex == top.index,
-                thinking = controller.aiThinking && top.index == controller.aiIndex,
-                onOpenZone = { title, cards -> zoneViewer = title to cards }
-            )
-            OpponentHand(
-                hand = top.hand,
+            DuelHeader(
                 turn = state.turn,
-                onInspect = { detail = it }
-            )
-            ZoneRow(
-                zones = top.spellTrapZones,
-                ownerIndex = top.index,
-                bottomIndex = bottomIndex,
-                onClick = { detail = it },
-                onLongClick = { detail = it }
-            )
-            ZoneRow(
-                zones = top.monsterZones,
-                ownerIndex = top.index,
-                bottomIndex = bottomIndex,
-                engine = engine,
-                highlight = attacker != null,
-                onClick = { card ->
-                    val current = attacker
-                    if (current != null) {
-                        attacker = null
-                        scope.launch { engine.declareAttack(current, card) }
-                    } else {
-                        detail = card
-                    }
-                },
-                onLongClick = { detail = it }
+                turnOwner = state.turnPlayer.name,
+                mine = state.turnPlayerIndex == bottomIndex,
+                soundOn = soundOn,
+                onToggleSound = { soundOn = !soundOn },
+                onShowLog = { showLog = true },
+                onBack = { showSurrender = true }
             )
 
-            // ---- 出来事の知らせ -----------------------------------------
-            BoardSignalBanner(state = state, soundOn = soundOn)
+            Box(
+                Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+            ) {
+                Column(
+                    Modifier
+                        .fillMaxSize()
+                        .drawBehind { drawDuelMat() }
+                        .graphicsLayer {
+                            val shake = fx.boardShake()
+                            translationX = shake
+                            translationY = shake * 0.4f
+                        }
+                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                    verticalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    PlayerPanel(
+                        player = top,
+                        isTurnPlayer = state.turnPlayerIndex == top.index,
+                        thinking = controller.aiThinking && top.index == controller.aiIndex,
+                        fx = fx,
+                        onOpenZone = { title, cards -> zoneViewer = title to cards }
+                    )
+                    OpponentHand(
+                        player = top,
+                        turn = state.turn,
+                        fx = fx,
+                        onInspect = { detail = it },
+                        modifier = Modifier.height(44.dp)
+                    )
+                    ZoneRow(
+                        zones = top.spellTrapZones,
+                        kind = SlotKind.SPELL_TRAP,
+                        fx = fx,
+                        isRevealed = { !it.faceDown },
+                        modifier = Modifier.weight(1f),
+                        onClick = { detail = it }
+                    )
+                    ZoneRow(
+                        zones = top.monsterZones,
+                        kind = SlotKind.MONSTER,
+                        fx = fx,
+                        isRevealed = { !it.faceDown },
+                        modifier = Modifier.weight(1f),
+                        engine = engine,
+                        markOf = { card -> if (attackTargets.any { it === card }) SlotMark.TARGET else null },
+                        onClick = { card ->
+                            val current = attacker
+                            if (current != null && attackTargets.any { it === card }) {
+                                attacker = null
+                                scope.launch { engine.declareAttack(current, card) }
+                            } else {
+                                detail = card
+                            }
+                        },
+                        onLongClick = { detail = it }
+                    )
 
-            // ---- 中央のコントロール -------------------------------------
-            PhaseBar(
-                phaseLabel = state.phase.label,
-                interactive = interactive,
-                canAttackDirectly = state.phase == Phase.BATTLE &&
-                    attacker?.let { engine.canAttackDirectlyWith(it) } ?: engine.canAttackDirectly(),
-                attacking = attacker != null,
-                onCancelAttack = { attacker = null },
-                onDirectAttack = {
-                    val current = attacker
-                    attacker = null
-                    if (current != null) scope.launch { engine.declareAttack(current, null) }
-                },
-                onNextPhase = { scope.launch { engine.advancePhase() } },
-                onEndTurn = { scope.launch { engine.endTurnImmediately() } }
-            )
+                    PhaseStrip(
+                        phase = state.phase,
+                        turnOwner = state.turnPlayer.name,
+                        interactive = interactive,
+                        waiting = state.turnPlayerIndex != bottomIndex,
+                        attacking = attacker != null,
+                        canAttackDirectly = attacker?.let { engine.canAttackDirectlyWith(it) } ?: false,
+                        fx = fx,
+                        onCancelAttack = { attacker = null },
+                        onDirectAttack = {
+                            val current = attacker
+                            attacker = null
+                            if (current != null) scope.launch { engine.declareAttack(current, null) }
+                        },
+                        onNextPhase = { scope.launch { engine.advancePhase() } },
+                        onEndTurn = { scope.launch { engine.endTurnImmediately() } }
+                    )
 
-            // ---- 自分側 -------------------------------------------------
-            ZoneRow(
-                zones = bottom.monsterZones,
-                ownerIndex = bottom.index,
-                bottomIndex = bottomIndex,
-                engine = engine,
-                onClick = { if (interactive) selected = it else detail = it },
-                onLongClick = { detail = it }
-            )
-            ZoneRow(
-                zones = bottom.spellTrapZones,
-                ownerIndex = bottom.index,
-                bottomIndex = bottomIndex,
-                onClick = { if (interactive) selected = it else detail = it },
-                onLongClick = { detail = it }
-            )
-            PlayerBanner(
-                player = bottom,
-                isTurnPlayer = state.turnPlayerIndex == bottom.index,
-                thinking = false,
-                onOpenZone = { title, cards -> zoneViewer = title to cards }
-            )
-
-            Text(
-                "手札 (${bottom.hand.size})",
-                style = MaterialTheme.typography.labelMedium,
-                color = Gold
-            )
-            LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                items(bottom.hand, key = { it.uid }) { card ->
-                    FieldCard(
-                        inst = card,
-                        revealed = true,
-                        atk = engine.atkOf(card),
-                        def = engine.defOf(card),
-                        modifier = Modifier.size(width = 64.dp, height = 90.dp),
-                        onClick = { if (interactive) selected = card else detail = card },
-                        onLongClick = { detail = card }
+                    ZoneRow(
+                        zones = bottom.monsterZones,
+                        kind = SlotKind.MONSTER,
+                        fx = fx,
+                        isRevealed = { true },
+                        modifier = Modifier.weight(1f),
+                        engine = engine,
+                        markOf = { card ->
+                            when {
+                                card === attacker -> SlotMark.CHOSEN
+                                usable.any { it === card } -> SlotMark.USABLE
+                                else -> null
+                            }
+                        },
+                        onClick = { if (interactive) selected = it else detail = it },
+                        onLongClick = { detail = it }
+                    )
+                    ZoneRow(
+                        zones = bottom.spellTrapZones,
+                        kind = SlotKind.SPELL_TRAP,
+                        fx = fx,
+                        isRevealed = { true },
+                        modifier = Modifier.weight(1f),
+                        markOf = { card -> if (usable.any { it === card }) SlotMark.USABLE else null },
+                        onClick = { if (interactive) selected = it else detail = it },
+                        onLongClick = { detail = it }
+                    )
+                    PlayerPanel(
+                        player = bottom,
+                        isTurnPlayer = state.turnPlayerIndex == bottom.index,
+                        thinking = false,
+                        fx = fx,
+                        onOpenZone = { title, cards -> zoneViewer = title to cards }
+                    )
+                    OwnHand(
+                        player = bottom,
+                        fx = fx,
+                        engine = engine,
+                        markOf = { card -> if (usable.any { it === card }) SlotMark.USABLE else null },
+                        onClick = { card -> if (interactive) selected = card else detail = card },
+                        onLongClick = { detail = it },
+                        modifier = Modifier.height(98.dp)
                     )
                 }
-            }
 
-            if (showLog) {
-                SectionCard(title = "デュエルログ") {
-                    LazyColumn(Modifier.heightIn(max = 220.dp)) {
-                        items(state.log.reversed()) { line ->
-                            Text(line, style = MaterialTheme.typography.bodySmall)
-                        }
-                    }
+                DuelFxLayer(fx = fx, state = state, bottomIndex = bottomIndex)
+
+                Column(
+                    Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = 58.dp, start = 24.dp, end = 24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    ToastStack(controller)
+                    SignalCaption(caption) { caption = null }
                 }
             }
-            Spacer(Modifier.height(12.dp))
+        }
+
+        if (state.finished && idle) {
+            DuelResult(
+                state = state,
+                bottomIndex = bottomIndex,
+                versusAi = config.versusAi,
+                onRematch = onRematch,
+                onExit = onExit
+            )
         }
     }
 
@@ -250,30 +369,14 @@ fun DuelScreen(
         )
     }
 
+    if (showLog) {
+        DuelLogDialog(state) { showLog = false }
+    }
+
     // ---- エンジンからの問い合わせ ------------------------------------------
-    controller.pendingPrompt?.let { prompt ->
+    // 演出が一段落してから出す。相手のカードの発動を見てから答えられるように。
+    controller.pendingPrompt?.takeIf { settled }?.let { prompt ->
         PromptDialog(prompt = prompt, master = master, controller = controller)
-    }
-
-    controller.toast?.let { message ->
-        AlertDialog(
-            onDismissRequest = { controller.toast = null },
-            title = { Text("メッセージ") },
-            text = { Text(message) },
-            confirmButton = {
-                TextButton(onClick = { controller.toast = null }) { Text("OK") }
-            }
-        )
-    }
-
-    if (state.finished) {
-        val winner = state.winnerIndex?.let { state.players[it].name } ?: "引き分け"
-        AlertDialog(
-            onDismissRequest = {},
-            title = { Text("デュエル終了") },
-            text = { Text("勝者: $winner") },
-            confirmButton = { TextButton(onClick = onExit) { Text("戻る") } }
-        )
     }
 
     if (showSurrender) {
@@ -287,280 +390,250 @@ fun DuelScreen(
     }
 }
 
-// ===========================================================================
-// 盤面のパーツ
-// ===========================================================================
+/** 字幕を出さない出来事。帯や浮かぶ数字、手札の動きで十分に分かるもの。 */
+private val quietKinds = setOf(
+    BoardSignalKind.TURN_START,
+    BoardSignalKind.ACTIVATED,
+    BoardSignalKind.DRAW,
+    BoardSignalKind.TARGETED,
+    BoardSignalKind.DAMAGE,
+    BoardSignalKind.RECOVER
+)
 
-@Composable
-private fun PlayerBanner(
-    player: PlayerState,
-    isTurnPlayer: Boolean,
-    thinking: Boolean,
-    onOpenZone: (String, List<CardInstance>) -> Unit
-) {
-    Surface(
-        color = if (isTurnPlayer) Surface2 else Surface1,
-        shape = RoundedCornerShape(8.dp),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Row(
-            Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            Text(
-                player.name,
-                fontWeight = FontWeight.Bold,
-                color = if (isTurnPlayer) Gold else MaterialTheme.colorScheme.onSurface
-            )
-            Text(
-                "LP ${player.life}",
-                fontWeight = FontWeight.Bold,
-                fontSize = 16.sp,
-                modifier = Modifier.weight(1f)
-            )
-            Text("デッキ${player.deck.size}", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Text(
-                "墓地${player.graveyard.size}",
-                fontSize = 11.sp,
-                color = Gold,
-                modifier = Modifier.clickable {
-                    onOpenZone("${player.name}の墓地", player.graveyard.toList())
-                }
-            )
-            Text(
-                "除外${player.banished.size}",
-                fontSize = 11.sp,
-                color = Gold,
-                modifier = Modifier.clickable {
-                    onOpenZone("${player.name}の除外ゾーン", player.banished.toList())
-                }
-            )
-            if (thinking) {
-                Text("思考中…", fontSize = 11.sp, color = Accent)
-            }
-        }
+/** 操作できるときに光らせるカード。発動できるもの、召喚できるもの、攻撃できるもの。 */
+private fun usableCards(controller: DuelController, player: PlayerState): Set<CardInstance> {
+    val engine = controller.engine
+    val state = controller.state
+    val result = engine.activatableCards(player).toMutableSet()
+    if (state.phase.isMain) {
+        result += player.hand.filter { it.card.kind == CardKind.MONSTER && engine.canNormalSummon(it, player) }
     }
+    if (state.phase == Phase.BATTLE) {
+        result += player.monsters.filter { engine.canAttack(it) }
+    }
+    return result
 }
 
-/**
- * 相手の手札。ふだんは裏側だが、効果で公開されたカードは表にして見せる。
- */
+// ===========================================================================
+// 画面の上の帯・字幕・お知らせ
+// ===========================================================================
+
 @Composable
-private fun OpponentHand(
-    hand: List<CardInstance>,
+private fun DuelHeader(
     turn: Int,
-    onInspect: (CardInstance) -> Unit
-) {
-    val shown = hand.take(10)
-    Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
-        shown.forEach { card ->
-            if (card.isRevealed(turn)) {
-                FieldCard(
-                    inst = card,
-                    revealed = true,
-                    modifier = Modifier.size(width = 32.dp, height = 46.dp),
-                    onClick = { onInspect(card) },
-                    onLongClick = { onInspect(card) }
-                )
-            } else {
-                Box(
-                    Modifier
-                        .size(width = 22.dp, height = 32.dp)
-                        .clip(RoundedCornerShape(3.dp))
-                        .background(Surface2)
-                        .border(1.dp, Accent.copy(alpha = 0.4f), RoundedCornerShape(3.dp))
-                )
-            }
-        }
-        if (hand.size > 10) Text("+${hand.size - 10}", fontSize = 10.sp)
-    }
-}
-
-@Composable
-private fun ZoneRow(
-    zones: List<CardInstance?>,
-    ownerIndex: Int,
-    bottomIndex: Int,
-    /** 永続効果込みの攻守を出すためのエンジン。null なら素の値を出す。 */
-    engine: GameEngine? = null,
-    highlight: Boolean = false,
-    onClick: (CardInstance) -> Unit,
-    onLongClick: (CardInstance) -> Unit
+    turnOwner: String,
+    mine: Boolean,
+    soundOn: Boolean,
+    onToggleSound: () -> Unit,
+    onShowLog: () -> Unit,
+    onBack: () -> Unit
 ) {
     Row(
-        Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(4.dp)
+        Modifier
+            .fillMaxWidth()
+            .background(Surface1)
+            .padding(horizontal = 2.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        zones.forEach { card ->
-            Box(Modifier.weight(1f)) {
-                if (card == null) {
-                    EmptySlot()
-                } else {
-                    FieldCard(
-                        inst = card,
-                        revealed = !card.faceDown || ownerIndex == bottomIndex,
-                        highlight = highlight,
-                        atk = engine?.atkOf(card),
-                        def = engine?.defOf(card),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(74.dp),
-                        onClick = { onClick(card) },
-                        onLongClick = { onLongClick(card) }
-                    )
-                }
-            }
+        IconButton(onClick = onBack) {
+            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "デュエルを終了")
+        }
+        Text("ターン $turn", fontSize = 16.sp, fontWeight = FontWeight.Black, color = Color.White)
+        Spacer(Modifier.width(10.dp))
+        Text(
+            "${turnOwner}のターン",
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold,
+            color = if (mine) Gold else Danger,
+            maxLines = 1,
+            modifier = Modifier
+                .background((if (mine) Gold else Danger).copy(alpha = 0.14f), RoundedCornerShape(10.dp))
+                .padding(horizontal = 8.dp, vertical = 2.dp)
+        )
+        Spacer(Modifier.weight(1f))
+        IconButton(onClick = onToggleSound) {
+            Icon(
+                if (soundOn) Icons.Filled.MusicNote else Icons.Filled.MusicOff,
+                contentDescription = if (soundOn) "音を消す" else "音を出す",
+                tint = if (soundOn) Accent else Color.White.copy(alpha = 0.5f)
+            )
+        }
+        IconButton(onClick = onShowLog) {
+            Icon(Icons.Filled.History, contentDescription = "デュエルログ")
         }
     }
 }
 
+/** 直前の出来事の短い字幕。少しすると消える。 */
 @Composable
-private fun EmptySlot() {
-    Box(
-        Modifier
-            .fillMaxWidth()
-            .height(74.dp)
-            .clip(RoundedCornerShape(5.dp))
-            .background(Color.White.copy(alpha = 0.03f))
-            .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(5.dp))
+private fun SignalCaption(signal: BoardSignal?, onDone: () -> Unit) {
+    if (signal == null) return
+    val alpha = remember(signal.id) { Animatable(0f) }
+    LaunchedEffect(signal.id) {
+        alpha.animateTo(1f, tween(160))
+        delay(1100)
+        alpha.animateTo(0f, tween(300))
+        onDone()
+    }
+    val color = signalColor(signal.kind)
+    Text(
+        "${signal.kind.label}　${signal.text}",
+        fontSize = 12.sp,
+        fontWeight = FontWeight.Bold,
+        color = color.lighten(0.2f),
+        maxLines = 1,
+        modifier = Modifier
+            .graphicsLayer { this.alpha = alpha.value }
+            .background(Ink.copy(alpha = 0.82f), RoundedCornerShape(12.dp))
+            .border(0.5.dp, color.copy(alpha = 0.6f), RoundedCornerShape(12.dp))
+            .padding(horizontal = 12.dp, vertical = 4.dp)
+    )
+}
+
+/** エンジンからのお知らせ。順に出して、少しすると消える。タップでも消せる。 */
+@Composable
+private fun ToastStack(controller: DuelController) {
+    val toast = controller.toasts.firstOrNull() ?: return
+    LaunchedEffect(toast.id) {
+        delay(2800)
+        controller.toasts.remove(toast)
+    }
+    Text(
+        toast.text,
+        fontSize = 12.sp,
+        color = Color.White,
+        textAlign = TextAlign.Center,
+        modifier = Modifier
+            .background(Surface2.copy(alpha = 0.96f), RoundedCornerShape(10.dp))
+            .border(0.5.dp, Accent.copy(alpha = 0.6f), RoundedCornerShape(10.dp))
+            .clickable { controller.toasts.remove(toast) }
+            .padding(horizontal = 14.dp, vertical = 8.dp)
     )
 }
 
 @Composable
-private fun FieldCard(
-    inst: CardInstance,
-    revealed: Boolean,
-    modifier: Modifier = Modifier,
-    highlight: Boolean = false,
-    /** 永続効果込みの値。渡されなければカード自身の値を表示する。 */
-    atk: Int? = null,
-    def: Int? = null,
-    onClick: () -> Unit,
-    onLongClick: () -> Unit = onClick
-) {
-    val borderColor = when {
-        highlight -> Danger
-        inst.faceDown -> Accent.copy(alpha = 0.5f)
-        else -> kindColor(inst.card.kind)
-    }
-
-    Box(
-        modifier = modifier
-            .clip(RoundedCornerShape(5.dp))
-            .background(Surface2)
-            .border(1.5.dp, borderColor, RoundedCornerShape(5.dp))
-            .tapOrHold(onClick = onClick, onLongClick = onLongClick)
-    ) {
-        if (!revealed) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("裏", fontSize = 12.sp, color = Accent)
-            }
-            return@Box
-        }
-
-        Column(Modifier.fillMaxSize()) {
-            CardArt(
-                imagePath = inst.card.imagePath,
-                kind = inst.card.kind,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f)
-            )
-            Text(
-                inst.card.name,
-                fontSize = 8.sp,
-                maxLines = 1,
-                textAlign = TextAlign.Center,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 2.dp)
-            )
-            if (inst.card.kind == CardKind.MONSTER) {
-                // 効果で上下している値は色を変えて、変化が見て分かるようにする。
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.Center
-                ) {
-                    StatValue(atk ?: inst.atkValue, inst.card.atk)
-                    Text("/", fontSize = 8.sp, color = Gold)
-                    StatValue(def ?: inst.defValue, inst.card.def)
+private fun DuelLogDialog(state: GameState, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("デュエルログ") },
+        text = {
+            LazyColumn(
+                Modifier.heightIn(max = 460.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                items(state.log.reversed()) { line ->
+                    Text(
+                        line,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (line.startsWith("──")) Gold else MaterialTheme.colorScheme.onSurface
+                    )
                 }
             }
-        }
-
-        // 表示形式・使用済みの目印。
-        if (inst.card.kind == CardKind.MONSTER) {
-            Text(
-                inst.displayPosition.short,
-                fontSize = 9.sp,
-                color = if (inst.displayPosition == Position.ATTACK) Danger else Accent,
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(2.dp)
-            )
-        }
-        if (inst.hasAttacked) {
-            Text(
-                "済",
-                fontSize = 9.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(2.dp)
-            )
-        }
-    }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("閉じる") } }
+    )
 }
 
+// ===========================================================================
+// 決着
+// ===========================================================================
+
 @Composable
-private fun PhaseBar(
-    phaseLabel: String,
-    interactive: Boolean,
-    canAttackDirectly: Boolean,
-    attacking: Boolean,
-    onCancelAttack: () -> Unit,
-    onDirectAttack: () -> Unit,
-    onNextPhase: () -> Unit,
-    onEndTurn: () -> Unit
+private fun DuelResult(
+    state: GameState,
+    bottomIndex: Int,
+    versusAi: Boolean,
+    onRematch: () -> Unit,
+    onExit: () -> Unit
 ) {
-    Surface(color = Surface1, shape = RoundedCornerShape(8.dp), modifier = Modifier.fillMaxWidth()) {
+    val winner = state.winnerIndex
+    val won = winner == bottomIndex
+    val title = when {
+        winner == null -> "引き分け"
+        !versusAi -> "${state.players[winner].name}の勝利"
+        won -> "勝利"
+        else -> "敗北"
+    }
+    val color = when {
+        winner == null -> Accent
+        !versusAi || won -> Gold
+        else -> Danger
+    }
+    val progress = remember { Animatable(0f) }
+    LaunchedEffect(Unit) { progress.animateTo(1f, tween(1400)) }
+
+    Box(
+        Modifier
+            .fillMaxSize()
+            .graphicsLayer { alpha = (progress.value * 3f).coerceAtMost(1f) }
+            .background(Color.Black.copy(alpha = 0.72f))
+            // 下の盤面を触らせない。
+            .clickable(enabled = true, onClick = {}),
+        contentAlignment = Alignment.Center
+    ) {
+        Canvas(Modifier.fillMaxSize()) {
+            val t = progress.value
+            val center = Offset(size.width / 2, size.height * 0.42f)
+            drawCircle(
+                Brush.radialGradient(listOf(color.copy(alpha = 0.45f * t), Color.Transparent), center, size.minDimension * 0.6f),
+                size.minDimension * 0.6f,
+                center
+            )
+            // 勝ったときは光の粒を散らす。
+            if (color != Danger) {
+                val rng = java.util.Random(42)
+                repeat(40) {
+                    val angle = rng.nextFloat() * 2 * PI
+                    val speed = 0.3f + rng.nextFloat() * 0.7f
+                    val d = size.minDimension * 0.55f * speed * (1f - (1f - t) * (1f - t))
+                    val p = center + Offset((cos(angle) * d).toFloat(), (sin(angle) * d).toFloat() + 90f * t * t)
+                    drawCircle(
+                        (if (it % 3 == 0) Color.White else color).copy(alpha = (1f - t * 0.7f)),
+                        2f + rng.nextFloat() * 4f,
+                        p
+                    )
+                }
+            }
+        }
         Column(
-            Modifier.padding(8.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+            modifier = Modifier.graphicsLayer {
+                val t = (progress.value / 0.35f).coerceAtMost(1f)
+                val s = 1.6f - 0.6f * (1f - (1f - t) * (1f - t))
+                scaleX = s
+                scaleY = s
+            }
         ) {
-            if (attacking) {
-                Text(
-                    "攻撃対象を選んでください。",
-                    color = Danger,
-                    style = MaterialTheme.typography.labelMedium
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (canAttackDirectly) {
-                        Button(onClick = onDirectAttack, modifier = Modifier.weight(1f)) {
-                            Text("プレイヤーに直接攻撃")
-                        }
-                    } else {
-                        Text(
-                            "相手にモンスターがいるため直接攻撃はできません。",
-                            style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
-                    OutlinedButton(onClick = onCancelAttack) { Text("やめる") }
-                }
-            } else {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Text(phaseLabel, color = Gold, fontWeight = FontWeight.Bold)
-                    Spacer(Modifier.weight(1f))
-                    OutlinedButton(onClick = onNextPhase, enabled = interactive) {
-                        Text("次のフェイズ")
-                    }
-                    Button(onClick = onEndTurn, enabled = interactive) { Text("ターン終了") }
-                }
+            Text(
+                if (winner == null) "DRAW" else if (!versusAi || won) "VICTORY" else "DEFEAT",
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Bold,
+                color = color.lighten(0.3f),
+                letterSpacing = 6.sp
+            )
+            Text(
+                title,
+                fontSize = 46.sp,
+                fontWeight = FontWeight.Black,
+                color = Color.White,
+                style = TextStyle(shadow = Shadow(color, Offset.Zero, 28f))
+            )
+            // 「〜のライフが0になった。勝者: 〜」の前半だけを見せる。
+            val reason = state.log.lastOrNull { it.contains("勝者:") }?.substringBefore("。")
+            if (!reason.isNullOrBlank()) {
+                Text(reason, fontSize = 12.sp, color = Color.White.copy(alpha = 0.7f), textAlign = TextAlign.Center)
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedButton(
+                    onClick = onExit,
+                    border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.6f))
+                ) { Text("戻る", color = Color.White) }
+                Button(
+                    onClick = onRematch,
+                    colors = ButtonDefaults.buttonColors(containerColor = color)
+                ) { Text("もう一度", color = Ink, fontWeight = FontWeight.Bold) }
             }
         }
     }
@@ -686,21 +759,6 @@ private fun CardActionDialog(
     )
 }
 
-/** 攻守の1つぶん。素の値から動いていれば、上昇は緑・低下は赤で示す。 */
-@Composable
-private fun StatValue(current: Int, base: Int) {
-    Text(
-        current.toString(),
-        fontSize = 8.sp,
-        fontWeight = if (current == base) FontWeight.Normal else FontWeight.Bold,
-        color = when {
-            current > base -> Boost
-            current < base -> Danger
-            else -> Gold
-        }
-    )
-}
-
 private fun tributeSuffix(inst: CardInstance): String {
     val need = inst.card.tributesRequired
     return if (need > 0) "（${need}体リリース）" else ""
@@ -810,11 +868,7 @@ private fun CardSelectionDialog(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                CardArt(
-                                    imagePath = card.card.imagePath,
-                                    kind = card.card.kind,
-                                    modifier = Modifier.size(width = 30.dp, height = 42.dp)
-                                )
+                                CardFace(card.card, Modifier.size(width = 34.dp, height = 47.dp))
                                 Column(Modifier.weight(1f)) {
                                     Text(card.card.name, fontWeight = FontWeight.Bold)
                                     Text(
@@ -882,11 +936,7 @@ private fun PromptSubject(subject: CardInstance?, master: MasterData) {
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            CardArt(
-                imagePath = subject.card.imagePath,
-                kind = subject.card.kind,
-                modifier = Modifier.size(width = 30.dp, height = 42.dp)
-            )
+            CardFace(subject.card, Modifier.size(width = 34.dp, height = 47.dp))
             Column(Modifier.weight(1f)) {
                 Text(subject.card.name, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                 Text(
@@ -941,11 +991,7 @@ private fun ZoneViewerDialog(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                CardArt(
-                                    imagePath = card.card.imagePath,
-                                    kind = card.card.kind,
-                                    modifier = Modifier.size(width = 30.dp, height = 42.dp)
-                                )
+                                CardFace(card.card, Modifier.size(width = 34.dp, height = 47.dp))
                                 Column(Modifier.weight(1f)) {
                                     Text(card.card.name, fontWeight = FontWeight.Bold)
                                     Text(

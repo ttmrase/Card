@@ -294,6 +294,7 @@ private fun DeckCardRow(
             CardArt(
                 imagePath = card.imagePath,
                 kind = card.kind,
+                seed = card.id,
                 modifier = Modifier.size(width = 38.dp, height = 52.dp)
             )
             Column(Modifier.weight(1f)) {
@@ -331,6 +332,8 @@ fun DuelSetupScreen(
     var deckA by remember { mutableStateOf(usable.firstOrNull()) }
     var deckB by remember { mutableStateOf(usable.firstOrNull()) }
     var versusAi by remember { mutableStateOf(true) }
+    // 0 = プレイヤー1、1 = 相手、null = ランダム。
+    var firstPlayer by remember { mutableStateOf<Int?>(0) }
 
     ScreenScaffold(title = "デュエル準備", onBack = onBack) { padding ->
         Column(
@@ -359,11 +362,21 @@ fun DuelSetupScreen(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                Text(
+                    "先攻",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                FlowRowSimple {
+                    Chip(if (versusAi) "自分" else "プレイヤー1", selected = firstPlayer == 0) { firstPlayer = 0 }
+                    Chip(if (versusAi) "AI" else "プレイヤー2", selected = firstPlayer == 1) { firstPlayer = 1 }
+                    Chip("ランダム", selected = firstPlayer == null) { firstPlayer = null }
+                }
             }
 
             SectionCard(title = "デッキ選択") {
                 Dropdown(
-                    label = "プレイヤー1（先攻）",
+                    label = if (versusAi) "自分" else "プレイヤー1",
                     items = usable,
                     selected = deckA,
                     itemLabel = { "${it.name}（${it.size}枚）" }
@@ -402,9 +415,10 @@ fun DuelSetupScreen(
                         DuelConfig(
                             deckAId = a.id,
                             deckBId = b.id,
-                            playerAName = "プレイヤー1",
+                            playerAName = if (versusAi) "あなた" else "プレイヤー1",
                             playerBName = if (versusAi) "AI" else "プレイヤー2",
-                            versusAi = versusAi
+                            versusAi = versusAi,
+                            firstPlayer = firstPlayer
                         )
                     )
                 },
