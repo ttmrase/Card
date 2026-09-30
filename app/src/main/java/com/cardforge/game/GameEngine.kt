@@ -690,7 +690,26 @@ class GameEngine(
         is CounterValue ->
             spec.base + candidates(spec.scope, controller, source, respectProtection = false)
                 .sumOf { it.counterCount(spec.counterId) } * spec.multiplier
+
+        is LevelValue ->
+            spec.base + levelCards(spec.source, source).sumOf { levelOf(it) } * spec.multiplier
     }
+
+    /** レベルを数えるモンスター。 */
+    private fun levelCards(from: LevelSource, source: CardInstance?): List<CardInstance> = when (from) {
+        LevelSource.EVENT_CARD -> listOfNotNull(currentTrigger?.card)
+        LevelSource.EVENT_SOURCE -> listOfNotNull(currentTrigger?.sourceCard)
+        LevelSource.LAST_HANDLED -> lastHandled
+        LevelSource.SELF -> listOfNotNull(source)
+    }
+
+    /** レベルを持つのはモンスターだけ。魔法・罠は 0 として数える。 */
+    private fun levelOf(inst: CardInstance): Int =
+        if (inst.card.kind == CardKind.MONSTER) inst.card.level else 0
+
+    /** 前の処理の結果を見る数値の指定か。 */
+    private fun usesPreviousStep(spec: ValueSpec?): Boolean =
+        spec is AffectedCountValue || (spec is LevelValue && spec.source == LevelSource.LAST_HANDLED)
 
     // =======================================================================
     // 条件とコスト
@@ -818,15 +837,16 @@ class GameEngine(
         excluding: CardInstance? = null
     ): Boolean = costs.all { cost ->
         when (cost) {
-            is PayLifeCost -> controller.life > cost.amount
+            is PayLifeCost -> controller.life > resolveValue(cost.amountSpec, controller, excluding)
             is DiscardCost ->
                 controller.hand.count { it !== excluding && matchesAll(it, cost.filters) } >= cost.count
 
             is TributeCost ->
                 controller.monsters.count {
-                    matchesAll(it, cost.filters) &&
+                    it !== excluding &&
+                        matchesAll(it, cost.filters) &&
                         allowed(controller, RestrictionKind.TRIBUTE, it)
-                } >= cost.count
+                } >= resolveValue(cost.countSpec, controller, excluding)
 
             is BanishFromGraveCost ->
                 controller.graveyard.count { matchesAll(it, cost.filters) } >= cost.count
@@ -845,7 +865,7 @@ class GameEngine(
             is CounterCost -> {
                 val key = cost.counterId ?: DEFAULT_COUNTER
                 candidates(cost.scope, controller, excluding, respectProtection = false)
-                    .sumOf { it.counterCount(key) } >= cost.amount
+                    .sumOf { it.counterCount(key) } >= resolveValue(cost.amountSpec, controller, excluding)
             }
         }
     }
@@ -889,8 +909,9 @@ class GameEngine(
         for (cost in costs) {
             when (cost) {
                 is PayLifeCost -> {
-                    controller.life -= cost.amount
-                    log("${controller.name}はライフを${cost.amount}払った。（残り${controller.life}）")
+                    val amount = resolveValue(cost.amountSpec, controller, excluding).coerceAtLeast(0)
+                    controller.life -= amount
+                    log("${controller.name}はライフを${amount}払った。（残り${controller.life}）")
                 }
 
                 is DiscardCost -> {
@@ -907,17 +928,21 @@ class GameEngine(
                 }
 
                 is TributeCost -> {
-                    val pool = controller.monsters.filter {
-                        matchesAll(it, cost.filters) &&
-                            allowed(controller, RestrictionKind.TRIBUTE, it)
+                    val need = resolveValue(cost.countSpec, controller, excluding).coerceAtLeast(0)
+                    if (need > 0) {
+                        val pool = controller.monsters.filter {
+                            it !== excluding &&
+                                matchesAll(it, cost.filters) &&
+                                allowed(controller, RestrictionKind.TRIBUTE, it)
+                        }
+                        val chosen = interaction.chooseCards(
+                            controller.index, "コスト：リリースするモンスターを${need}体選択",
+                            pool, need, need
+                        )
+                        if (chosen.size < need) return false
+                        chosen.forEach { sendToGraveyard(it) }
+                        log("${controller.name}はモンスター${need}体をリリースした。")
                     }
-                    val chosen = interaction.chooseCards(
-                        controller.index, "コスト：リリースするモンスターを${cost.count}体選択",
-                        pool, cost.count, cost.count
-                    )
-                    if (chosen.size < cost.count) return false
-                    chosen.forEach { sendToGraveyard(it) }
-                    log("${controller.name}はモンスター${cost.count}体をリリースした。")
                 }
 
                 is BanishFromGraveCost -> {
@@ -979,7 +1004,8 @@ class GameEngine(
 
                 is CounterCost -> {
                     val key = cost.counterId ?: DEFAULT_COUNTER
-                    var left = cost.amount
+                    val amount = resolveValue(cost.amountSpec, controller, excluding).coerceAtLeast(0)
+                    var left = amount
                     val pool = candidates(cost.scope, controller, excluding, respectProtection = false)
                     for (card in pool) {
                         if (left <= 0) break
@@ -993,7 +1019,7 @@ class GameEngine(
                     if (left > 0) return false
                     log(
                         "${controller.name}はコストとして" +
-                            "${state.master.counterName(cost.counterId)}を${cost.amount}個取り除いた。"
+                            "${state.master.counterName(cost.counterId)}を${amount}個取り除いた。"
                     )
                 }
             }
@@ -1382,10 +1408,12 @@ class GameEngine(
                     action.scope, controller, "カウンターを乗せるカードを選択", source
                 )
                 val name = state.master.counterName(action.counterId)
+                // 乗せる数は、この処理で扱ったカードを覚え直す前に決める。
+                val amount = resolveValue(action.amountSpec, controller, source).coerceAtLeast(0)
                 targets.forEach { target ->
                     val key = action.counterId ?: DEFAULT_COUNTER
-                    target.counters[key] = target.counterCount(key) + action.amount
-                    log("「${target.card.name}」に${name}を${action.amount}個乗せた。")
+                    if (amount > 0) target.counters[key] = target.counterCount(key) + amount
+                    log("「${target.card.name}」に${name}を${amount}個乗せた。")
                 }
                 lastAffected = targets
             }
@@ -1395,9 +1423,10 @@ class GameEngine(
                     action.scope, controller, "カウンターを取り除くカードを選択", source
                 )
                 val name = state.master.counterName(action.counterId)
+                val amount = resolveValue(action.amountSpec, controller, source).coerceAtLeast(0)
                 targets.forEach { target ->
                     val key = action.counterId ?: DEFAULT_COUNTER
-                    val left = (target.counterCount(key) - action.amount).coerceAtLeast(0)
+                    val left = (target.counterCount(key) - amount).coerceAtLeast(0)
                     if (left == 0) target.counters.remove(key) else target.counters[key] = left
                     log("「${target.card.name}」から${name}を取り除いた。")
                 }
@@ -1548,7 +1577,7 @@ class GameEngine(
      */
     private fun dependsOnPreviousStep(scope: CardScope?): Boolean {
         if (scope == null) return false
-        if (scope.countSpec is AffectedCountValue) return true
+        if (usesPreviousStep(scope.countSpec)) return true
         if (scope.triggerCard == TriggerCardRef.LAST_HANDLED) return true
         fun uses(filters: List<CardFilter>): Boolean = filters.any {
             it is AffectedNameFilter ||
@@ -2318,9 +2347,16 @@ class GameEngine(
     // =======================================================================
 
     /** 儀式召喚で1体出すのに必要な数（レベルの合計、または体数）。 */
-    private fun materialNeed(action: MaterialSummonAction, target: CardInstance): Int =
+    private fun materialNeed(
+        action: MaterialSummonAction,
+        target: CardInstance,
+        controller: PlayerState,
+        source: CardInstance?
+    ): Int =
         when (action.requirement) {
-            MaterialRequirement.COUNT -> action.count.coerceAtLeast(1)
+            MaterialRequirement.COUNT ->
+                resolveValue(action.countValue ?: FixedValue(action.count), controller, source)
+                    .coerceAtLeast(1)
             else -> target.card.level.coerceAtLeast(1)
         }
 
@@ -2359,7 +2395,7 @@ class GameEngine(
             if (!summonAllowed(target, controller, SummonKind.SPECIAL)) return@any false
             if (!specialSummonSourceAllowed(target, source)) return@any false
             val pool = candidates(action.material, controller, source).filter { it !== target }
-            canMeetMaterial(action, pool, materialNeed(action, target))
+            canMeetMaterial(action, pool, materialNeed(action, target, controller, source))
         }
     }
 
@@ -2378,7 +2414,7 @@ class GameEngine(
             .filter { specialSummonSourceAllowed(it, source) }
             .filter { target ->
                 val pool = candidates(action.material, controller, source).filter { it !== target }
-                canMeetMaterial(action, pool, materialNeed(action, target))
+                canMeetMaterial(action, pool, materialNeed(action, target, controller, source))
             }
         if (targets.isEmpty()) {
             log("特殊召喚できるモンスターがいない。")
@@ -2389,7 +2425,7 @@ class GameEngine(
             .chooseCards(controller.index, "特殊召喚するモンスターを選択", targets, 1, 1)
             .firstOrNull() ?: return
 
-        val need = materialNeed(action, target)
+        val need = materialNeed(action, target, controller, source)
         val chosen = mutableListOf<CardInstance>()
         var remaining = candidates(action.material, controller, source).filter { it !== target }
 

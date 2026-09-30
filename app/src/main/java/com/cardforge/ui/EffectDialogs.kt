@@ -214,11 +214,11 @@ fun ActionDialog(
         )
     }
     var counterAmount by remember {
-        mutableIntStateOf(
+        mutableStateOf<ValueSpec>(
             when (initial) {
-                is AddCounterAction -> initial.amount
-                is RemoveCounterAction -> initial.amount
-                else -> 1
+                is AddCounterAction -> initial.amountSpec
+                is RemoveCounterAction -> initial.amountSpec
+                else -> FixedValue(1)
             }
         )
     }
@@ -284,8 +284,14 @@ fun ActionDialog(
         ActionType.MATERIAL_SUMMON -> material
         ActionType.CREATE_TOKEN ->
             CreateTokenAction(tokenId, 1, who, tokenPositions, countValue = tokenCount)
-        ActionType.ADD_COUNTER -> AddCounterAction(scope, counterId, counterAmount)
-        ActionType.REMOVE_COUNTER -> RemoveCounterAction(scope, counterId, counterAmount)
+        ActionType.ADD_COUNTER -> counterAmount.let { spec ->
+            if (spec is FixedValue) AddCounterAction(scope, counterId, spec.value.coerceAtLeast(1))
+            else AddCounterAction(scope, counterId, amountValue = spec)
+        }
+        ActionType.REMOVE_COUNTER -> counterAmount.let { spec ->
+            if (spec is FixedValue) RemoveCounterAction(scope, counterId, spec.value.coerceAtLeast(1))
+            else RemoveCounterAction(scope, counterId, amountValue = spec)
+        }
         ActionType.REPLACE_DESTINATION -> ReplaceDestinationAction(scope, replaceTo)
         ActionType.RESTRICT -> restrict
         ActionType.PERMIT -> permit
@@ -522,8 +528,16 @@ fun ActionDialog(
                             { it.label }
                         ) { material = material.copy(requirement = it) }
                         if (material.requirement == MaterialRequirement.COUNT) {
-                            NumberField("必要な枚数", material.count) {
-                                material = material.copy(count = it.coerceIn(1, 9))
+                            ValueSpecEditor(
+                                "必要な枚数",
+                                material.countValue ?: FixedValue(material.count),
+                                master
+                            ) { spec ->
+                                material = if (spec is FixedValue) {
+                                    material.copy(count = spec.value.coerceIn(1, 9), countValue = null)
+                                } else {
+                                    material.copy(countValue = spec)
+                                }
                             }
                         }
 
@@ -552,9 +566,7 @@ fun ActionDialog(
                     ActionType.ADD_COUNTER, ActionType.REMOVE_COUNTER -> {
                         HorizontalDivider()
                         CounterPicker(master, counterId) { counterId = it }
-                        NumberField("個数", counterAmount) {
-                            counterAmount = it.coerceIn(1, 20)
-                        }
+                        ValueSpecEditor("個数", counterAmount, master) { counterAmount = it }
                     }
 
                     ActionType.CREATE_TOKEN -> {
@@ -1241,7 +1253,8 @@ private enum class CostType(val label: String) {
     SELF_BANISH("このカードを除外する"),
     MILL("自分のデッキから墓地へ送る"),
     REVEAL("カードを相手に見せる（公開する）"),
-    COUNTER("カウンターを取り除く")
+    COUNTER("カウンターを取り除く"),
+    TRIBUTE("自分フィールドのモンスターをリリースする")
 }
 
 @Composable
@@ -1262,11 +1275,21 @@ fun CostDialog(
                 is MillCost -> CostType.MILL
                 is RevealCost -> CostType.REVEAL
                 is CounterCost -> CostType.COUNTER
+                is TributeCost -> CostType.TRIBUTE
                 else -> CostType.MOVE
             }
         )
     }
-    var amount by remember { mutableIntStateOf((initial as? PayLifeCost)?.amount ?: 500) }
+    var amount by remember {
+        mutableStateOf<ValueSpec>((initial as? PayLifeCost)?.amountSpec ?: FixedValue(500))
+    }
+    var tributeCount by remember {
+        mutableStateOf<ValueSpec>((initial as? TributeCost)?.countSpec ?: FixedValue(1))
+    }
+    var tributeFilters by remember {
+        mutableStateOf((initial as? TributeCost)?.filters ?: emptyList())
+    }
+    var addingTributeFilter by remember { mutableStateOf(false) }
     var count by remember { mutableIntStateOf((initial as? MillCost)?.count ?: 1) }
     var scope by remember {
         mutableStateOf(
@@ -1289,16 +1312,28 @@ fun CostDialog(
     var counterId by remember {
         mutableStateOf((initial as? CounterCost)?.counterId ?: master.counters.firstOrNull()?.id)
     }
-    var counterAmount by remember { mutableIntStateOf((initial as? CounterCost)?.amount ?: 1) }
+    var counterAmount by remember {
+        mutableStateOf<ValueSpec>((initial as? CounterCost)?.amountSpec ?: FixedValue(1))
+    }
 
     fun build(): Cost = when (type) {
         CostType.MOVE -> MoveCost(scope, destination)
-        CostType.PAY_LIFE -> PayLifeCost(amount.coerceAtLeast(0))
+        CostType.PAY_LIFE -> amount.let { spec ->
+            if (spec is FixedValue) PayLifeCost(spec.value.coerceAtLeast(0))
+            else PayLifeCost(0, amountValue = spec)
+        }
+        CostType.TRIBUTE -> tributeCount.let { spec ->
+            if (spec is FixedValue) TributeCost(spec.value.coerceAtLeast(1), tributeFilters)
+            else TributeCost(1, tributeFilters, countValue = spec)
+        }
         CostType.SELF_TO_GRAVE -> DiscardSelfCost(banish = false)
         CostType.SELF_BANISH -> DiscardSelfCost(banish = true)
         CostType.MILL -> MillCost(count.coerceAtLeast(1))
         CostType.REVEAL -> RevealCost(revealScope, revealDuration)
-        CostType.COUNTER -> CounterCost(counterScope, counterId, counterAmount)
+        CostType.COUNTER -> counterAmount.let { spec ->
+            if (spec is FixedValue) CounterCost(counterScope, counterId, spec.value.coerceAtLeast(1))
+            else CounterCost(counterScope, counterId, amountValue = spec)
+        }
     }
 
     AlertDialog(
@@ -1329,7 +1364,26 @@ fun CostDialog(
                         ) { destination = it }
                     }
 
-                    CostType.PAY_LIFE -> NumberField("支払うライフ", amount) { amount = it }
+                    CostType.PAY_LIFE -> ValueSpecEditor("支払うライフ", amount, master) { amount = it }
+
+                    CostType.TRIBUTE -> {
+                        HorizontalDivider()
+                        Text(
+                            "リリースするモンスターの条件（任意）",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        FlowRowSimple {
+                            tributeFilters.forEachIndexed { index, filter ->
+                                Chip(filterChipLabel(filter, master) + " ✕", selected = true) {
+                                    tributeFilters = tributeFilters.toMutableList()
+                                        .also { it.removeAt(index) }
+                                }
+                            }
+                            Chip("＋ 条件を追加") { addingTributeFilter = true }
+                        }
+                        ValueSpecEditor("体数", tributeCount, master) { tributeCount = it }
+                    }
 
                     CostType.REVEAL -> {
                         HorizontalDivider()
@@ -1345,9 +1399,7 @@ fun CostDialog(
                             counterScope = it
                         }
                         CounterPicker(master, counterId) { counterId = it }
-                        NumberField("取り除く個数", counterAmount) {
-                            counterAmount = it.coerceIn(1, 20)
-                        }
+                        ValueSpecEditor("取り除く個数", counterAmount, master) { counterAmount = it }
                     }
 
                     CostType.SELF_TO_GRAVE, CostType.SELF_BANISH -> Text(
@@ -1376,6 +1428,17 @@ fun CostDialog(
         confirmButton = { TextButton(onClick = { onConfirm(build()) }) { Text("決定") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("キャンセル") } }
     )
+
+    if (addingTributeFilter) {
+        FilterDialog(
+            master = master,
+            onDismiss = { addingTributeFilter = false },
+            onConfirm = {
+                tributeFilters = tributeFilters + it
+                addingTributeFilter = false
+            }
+        )
+    }
 
 
 }

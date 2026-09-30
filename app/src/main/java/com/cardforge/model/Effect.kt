@@ -177,6 +177,31 @@ data class CounterValue(
     val base: Int = 0
 ) : ValueSpec
 
+/** レベルを数として使うモンスター。 */
+@Serializable
+enum class LevelSource(val label: String) {
+    /** 召喚された・破壊されたなど、【条件】に書いた出来事のモンスター。 */
+    EVENT_CARD("その出来事の対象になったモンスター"),
+    /** 攻撃してきた相手など、出来事の相手側のモンスター。 */
+    EVENT_SOURCE("その出来事の相手側のモンスター"),
+    /** 直前の処理（破壊した・特殊召喚した等）で扱ったモンスター。複数なら合計。 */
+    LAST_HANDLED("直前の処理で扱ったモンスター"),
+    SELF("このカード");
+
+    companion object {
+        val all: List<LevelSource> get() = entries
+    }
+}
+
+/** [base] ＋ [source] のモンスターのレベル（複数なら合計）× [multiplier]。 */
+@Serializable
+@SerialName("levelValue")
+data class LevelValue(
+    val source: LevelSource = LevelSource.EVENT_CARD,
+    val multiplier: Int = 1,
+    val base: Int = 0
+) : ValueSpec
+
 /** [base] ＋ [scope] に当てはまるカードの枚数 × [multiplier]。 */
 @Serializable
 @SerialName("countValue")
@@ -308,6 +333,8 @@ data class MaterialSummonAction(
     val requirement: MaterialRequirement = MaterialRequirement.LEVEL_OR_MORE,
     /** [MaterialRequirement.COUNT] のときに必要な体数。 */
     val count: Int = 1,
+    /** 体数の決め方。null なら [count] 体。 */
+    val countValue: ValueSpec? = null,
     /** 選べる表示形式。2つ以上あれば処理のときにプレイヤーが選ぶ。 */
     val positionChoices: List<Position> = listOf(Position.ATTACK)
 ) : Action {
@@ -362,8 +389,12 @@ data class ExtraSummonAction(
 data class AddCounterAction(
     val scope: CardScope,
     val counterId: String? = null,
-    val amount: Int = 1
-) : Action
+    val amount: Int = 1,
+    /** 個数の決め方。null なら [amount] 個。 */
+    val amountValue: ValueSpec? = null
+) : Action {
+    val amountSpec: ValueSpec get() = amountValue ?: FixedValue(amount)
+}
 
 /** カードからカウンターを取り除く。 */
 @Serializable
@@ -371,8 +402,12 @@ data class AddCounterAction(
 data class RemoveCounterAction(
     val scope: CardScope,
     val counterId: String? = null,
-    val amount: Int = 1
-) : Action
+    val amount: Int = 1,
+    /** 個数の決め方。null なら [amount] 個。 */
+    val amountValue: ValueSpec? = null
+) : Action {
+    val amountSpec: ValueSpec get() = amountValue ?: FixedValue(amount)
+}
 
 /** トークンを特殊召喚する。 */
 @Serializable
@@ -647,7 +682,13 @@ sealed interface Cost
 
 @Serializable
 @SerialName("payLife")
-data class PayLifeCost(val amount: Int) : Cost
+data class PayLifeCost(
+    val amount: Int,
+    /** 払う量の決め方。null なら [amount]。「レベル×100」などに使う。 */
+    val amountValue: ValueSpec? = null
+) : Cost {
+    val amountSpec: ValueSpec get() = amountValue ?: FixedValue(amount)
+}
 
 @Serializable
 @SerialName("discardCost")
@@ -656,7 +697,14 @@ data class DiscardCost(val count: Int, val filters: List<CardFilter> = emptyList
 /** 自分フィールドのモンスターをリリースする。 */
 @Serializable
 @SerialName("tributeCost")
-data class TributeCost(val count: Int, val filters: List<CardFilter> = emptyList()) : Cost
+data class TributeCost(
+    val count: Int,
+    val filters: List<CardFilter> = emptyList(),
+    /** 体数の決め方。null なら [count] 体。 */
+    val countValue: ValueSpec? = null
+) : Cost {
+    val countSpec: ValueSpec get() = countValue ?: FixedValue(count)
+}
 
 @Serializable
 @SerialName("banishGraveCost")
@@ -710,8 +758,12 @@ data class DiscardSelfCost(val banish: Boolean = false) : Cost
 data class CounterCost(
     val scope: CardScope = CardScope(selfOnly = true),
     val counterId: String? = null,
-    val amount: Int = 1
-) : Cost
+    val amount: Int = 1,
+    /** 取り除く個数の決め方。null なら [amount] 個。 */
+    val amountValue: ValueSpec? = null
+) : Cost {
+    val amountSpec: ValueSpec get() = amountValue ?: FixedValue(amount)
+}
 
 /** コストとしてカードを見せる（公開する）。 */
 @Serializable

@@ -277,7 +277,8 @@ object EffectTextRenderer {
             MaterialRequirement.LEVEL_OR_MORE ->
                 "レベルの合計がそのモンスターのレベル以上になるように"
 
-            MaterialRequirement.COUNT -> "${action.count.coerceAtLeast(1)}枚"
+            MaterialRequirement.COUNT ->
+                amountText(action.countValue ?: FixedValue(action.count.coerceAtLeast(1)), "枚", master)
         }
         val positions = action.choices.joinToString("または") { it.label }
         return "${target}を、${material}を${how}${action.destination.label}ことで、" +
@@ -341,11 +342,11 @@ object EffectTextRenderer {
 
         is AddCounterAction ->
             scopeToText(action.scope, master) + selectionParticle(action.scope) +
-                "${master.counterName(action.counterId)}を${action.amount}個乗せる"
+                "${master.counterName(action.counterId)}を${amountText(action.amountSpec, "個", master)}乗せる"
 
         is RemoveCounterAction ->
             scopeToText(action.scope, master) + "から" +
-                "${master.counterName(action.counterId)}を${action.amount}個取り除く"
+                "${master.counterName(action.counterId)}を${amountText(action.amountSpec, "個", master)}取り除く"
 
         is CreateTokenAction -> {
             val positions = action.choices.joinToString("または") { it.label }
@@ -520,16 +521,21 @@ object EffectTextRenderer {
     }
 
     fun costToText(cost: Cost, master: MasterData): String = when (cost) {
-        is PayLifeCost -> "ライフを${cost.amount}ポイント払う"
+        is PayLifeCost ->
+            if (cost.amountValue == null) "ライフを${cost.amount}ポイント払う"
+            else "ライフを${valueToText(cost.amountSpec, master)}ポイント払う"
 
         is DiscardCost ->
             if (cost.filters.isEmpty()) "手札を${cost.count}枚捨てる"
             else "手札から${filtersToNoun(cost.filters, master)}を${cost.count}枚捨てる"
 
-        is TributeCost ->
-            if (cost.filters.isEmpty()) "自分フィールドのモンスター${cost.count}体をリリースする"
-            else "自分フィールドの${filtersToNoun(cost.filters, master, ZoneType.MONSTER_ZONE)}" +
-                "${cost.count}体をリリースする"
+        is TributeCost -> {
+            val noun = if (cost.filters.isEmpty()) "モンスター"
+            else filtersToNoun(cost.filters, master, ZoneType.MONSTER_ZONE)
+            val count = cost.countSpec
+            if (count is FixedValue) "自分フィールドの$noun${count.value}体をリリースする"
+            else "自分フィールドの${noun}を${countSpecToText(count, master)}リリースする"
+        }
 
         is BanishFromGraveCost ->
             if (cost.filters.isEmpty()) "自分の墓地のカード${cost.count}枚を除外する"
@@ -547,7 +553,7 @@ object EffectTextRenderer {
 
         is CounterCost ->
             scopeToText(cost.scope, master, withCount = false) +
-                "の${master.counterName(cost.counterId)}を${cost.amount}個取り除く"
+                "の${master.counterName(cost.counterId)}を${amountText(cost.amountSpec, "個", master)}取り除く"
     }
 
     /** 数値の指定を文にする。「自分の墓地のモンスターの数×100」など。 */
@@ -563,6 +569,13 @@ object EffectTextRenderer {
         is CounterValue -> buildString {
             append(scopeToText(spec.scope, master, withCount = false))
             append("に乗っている${master.counterName(spec.counterId)}の数")
+            if (spec.multiplier != 1) append("×${spec.multiplier}")
+            if (spec.base != 0) append("＋${spec.base}")
+        }
+
+        is LevelValue -> buildString {
+            append(spec.source.label)
+            append(if (spec.source == LevelSource.LAST_HANDLED) "のレベルの合計" else "のレベル")
             if (spec.multiplier != 1) append("×${spec.multiplier}")
             if (spec.base != 0) append("＋${spec.base}")
         }

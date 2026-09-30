@@ -89,7 +89,7 @@ object IdRemapper {
             counterId = spec.counterId?.let { m[it] ?: it }
         )
 
-        is FixedValue, is AffectedCountValue -> spec
+        is FixedValue, is AffectedCountValue, is LevelValue -> spec
     }
 
     private fun remapFilter(filter: CardFilter, m: Map<String, String>): CardFilter =
@@ -122,13 +122,18 @@ object IdRemapper {
 
     private fun remapCost(cost: Cost, m: Map<String, String>): Cost = when (cost) {
         is DiscardCost -> cost.copy(filters = cost.filters.map { remapFilter(it, m) })
-        is TributeCost -> cost.copy(filters = cost.filters.map { remapFilter(it, m) })
+        is TributeCost -> cost.copy(
+            filters = cost.filters.map { remapFilter(it, m) },
+            countValue = cost.countValue?.let { remapValue(it, m) }
+        )
+        is PayLifeCost -> cost.copy(amountValue = cost.amountValue?.let { remapValue(it, m) })
         is BanishFromGraveCost -> cost.copy(filters = cost.filters.map { remapFilter(it, m) })
         is MoveCost -> cost.copy(scope = remapScope(cost.scope, m))
         is RevealCost -> cost.copy(scope = remapScope(cost.scope, m))
         is CounterCost -> cost.copy(
             scope = remapScope(cost.scope, m),
-            counterId = cost.counterId?.let { m[it] ?: it }
+            counterId = cost.counterId?.let { m[it] ?: it },
+            amountValue = cost.amountValue?.let { remapValue(it, m) }
         )
         else -> cost
     }
@@ -150,17 +155,20 @@ object IdRemapper {
 
         is MaterialSummonAction -> action.copy(
             summon = remapScope(action.summon, m),
-            material = remapScope(action.material, m)
+            material = remapScope(action.material, m),
+            countValue = action.countValue?.let { remapValue(it, m) }
         )
 
         is AddCounterAction -> action.copy(
             scope = remapScope(action.scope, m),
-            counterId = action.counterId?.let { m[it] ?: it }
+            counterId = action.counterId?.let { m[it] ?: it },
+            amountValue = action.amountValue?.let { remapValue(it, m) }
         )
 
         is RemoveCounterAction -> action.copy(
             scope = remapScope(action.scope, m),
-            counterId = action.counterId?.let { m[it] ?: it }
+            counterId = action.counterId?.let { m[it] ?: it },
+            amountValue = action.amountValue?.let { remapValue(it, m) }
         )
 
         is ReplaceDestinationAction -> action.copy(scope = remapScope(action.scope, m))
@@ -254,6 +262,10 @@ object IdRemapper {
 
     private fun collectValue(spec: ValueSpec?, ids: MutableSet<String>) {
         if (spec is CountValue) collectScope(spec.scope, ids)
+        if (spec is CounterValue) {
+            collectScope(spec.scope, ids)
+            spec.counterId?.let(ids::add)
+        }
     }
 
     private fun collectCondition(condition: Condition, ids: MutableSet<String>) {
@@ -276,13 +288,18 @@ object IdRemapper {
     private fun collectCost(cost: Cost, ids: MutableSet<String>) {
         when (cost) {
             is DiscardCost -> collectFilters(cost.filters, ids)
-            is TributeCost -> collectFilters(cost.filters, ids)
+            is TributeCost -> {
+                collectFilters(cost.filters, ids)
+                collectValue(cost.countValue, ids)
+            }
+            is PayLifeCost -> collectValue(cost.amountValue, ids)
             is BanishFromGraveCost -> collectFilters(cost.filters, ids)
             is MoveCost -> collectScope(cost.scope, ids)
             is RevealCost -> collectScope(cost.scope, ids)
             is CounterCost -> {
                 collectScope(cost.scope, ids)
                 cost.counterId?.let(ids::add)
+                collectValue(cost.amountValue, ids)
             }
             else -> Unit
         }
@@ -310,16 +327,19 @@ object IdRemapper {
             is MaterialSummonAction -> {
                 collectScope(action.summon, ids)
                 collectScope(action.material, ids)
+                collectValue(action.countValue, ids)
             }
 
             is AddCounterAction -> {
                 collectScope(action.scope, ids)
                 action.counterId?.let(ids::add)
+                collectValue(action.amountValue, ids)
             }
 
             is RemoveCounterAction -> {
                 collectScope(action.scope, ids)
                 action.counterId?.let(ids::add)
+                collectValue(action.amountValue, ids)
             }
 
             is ReplaceDestinationAction -> collectScope(action.scope, ids)

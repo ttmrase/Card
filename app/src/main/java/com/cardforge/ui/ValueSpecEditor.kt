@@ -80,6 +80,34 @@ fun ValueSpecEditor(
                 }
             }
 
+            is LevelValue -> {
+                Dropdown("どのモンスターのレベルか", LevelSource.all, spec.source, { it.label }) {
+                    onChange(spec.copy(source = it))
+                }
+                Text(
+                    when (spec.source) {
+                        LevelSource.EVENT_CARD ->
+                            "【条件】に書いた出来事（召喚された・破壊された等）のモンスターのレベルです。"
+                        LevelSource.EVENT_SOURCE ->
+                            "出来事の相手側（攻撃してきたモンスター等）のレベルです。"
+                        LevelSource.LAST_HANDLED ->
+                            "直前の処理（破壊した・特殊召喚した等）で扱ったモンスターのレベルです。" +
+                                "複数なら合計します。別のカードの効果で扱ったものも指せます。"
+                        LevelSource.SELF -> "この効果を持つカード自身のレベルです。"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    NumberField("レベル1あたり", spec.multiplier, Modifier.weight(1f)) {
+                        onChange(spec.copy(multiplier = it))
+                    }
+                    NumberField("固定で足す", spec.base, Modifier.weight(1f)) {
+                        onChange(spec.copy(base = it))
+                    }
+                }
+            }
+
             is CounterValue -> {
                 Text(
                     "カウンターが乗っているカード",
@@ -141,13 +169,15 @@ private enum class ValueKind(val label: String) {
     FIXED("決まった数"),
     CARD_COUNT("カードの枚数で決める"),
     AFFECTED("直前の処理で扱った枚数で決める"),
-    COUNTER("カウンターの数で決める");
+    COUNTER("カウンターの数で決める"),
+    LEVEL("モンスターのレベルで決める");
 
     fun create(current: ValueSpec): ValueSpec = when (this) {
         FIXED -> FixedValue((current as? FixedValue)?.value ?: 0)
         CARD_COUNT -> CountValue()
         AFFECTED -> AffectedCountValue()
         COUNTER -> CounterValue()
+        LEVEL -> LevelValue()
     }
 
     companion object {
@@ -158,6 +188,7 @@ private enum class ValueKind(val label: String) {
             is CountValue -> CARD_COUNT
             is AffectedCountValue -> AFFECTED
             is CounterValue -> COUNTER
+            is LevelValue -> LEVEL
         }
     }
 }
