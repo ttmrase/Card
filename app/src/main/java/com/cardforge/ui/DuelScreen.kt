@@ -344,12 +344,19 @@ fun DuelTable(
         CardPreviewDialog(
             card = card.card,
             master = master,
-            statLine = if (card.card.kind == CardKind.MONSTER) {
-                "★${card.card.level} " +
-                    "${master.attributeName(card.card.attributeId)}/" +
-                    "${master.raceName(card.card.raceId)} " +
-                    "ATK ${engine.atkOf(card)} / DEF ${engine.defOf(card)}"
-            } else null,
+            statLine = listOfNotNull(
+                if (card.card.kind == CardKind.MONSTER) {
+                    "★${card.card.level} " +
+                        "${master.attributeName(card.card.attributeId)}/" +
+                        "${master.raceName(card.card.raceId)} " +
+                        "ATK ${engine.atkOf(card)} / DEF ${engine.defOf(card)}"
+                } else EffectTextRenderer.summary(card.card, master),
+                // 乗っているカウンターは種類ごとに見せる。
+                card.counters.filter { it.value > 0 }.takeIf { it.isNotEmpty() }?.entries
+                    ?.joinToString("、") { (id, n) ->
+                        "${master.counterName(id.takeIf { it != "counter" })}×$n"
+                    }
+            ).joinToString("\n").ifEmpty { null },
             onDismiss = { detail = null }
         )
     }
@@ -703,7 +710,7 @@ private fun CardActionDialog(
                     }
                     ActionButton(
                         "裏側守備でセットする" + tributeSuffix(inst),
-                        enabled = engine.canNormalSummon(inst, player)
+                        enabled = engine.canNormalSummon(inst, player, asSet = true)
                     ) {
                         onDismiss()
                         scope.launch { engine.normalSummon(inst, player, asSet = true) }

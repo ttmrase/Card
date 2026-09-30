@@ -65,6 +65,11 @@ data class CardDef(
     /** 「特殊召喚できない」カード。 */
     val cannotSpecialSummon: Boolean = false,
     /**
+     * 「このカード名のカードはフィールドに1枚しか表側表示で存在できない」。
+     * null なら制限なし。
+     */
+    val uniqueOnField: UniqueScope? = null,
+    /**
      * 「〜の効果によってのみ特殊召喚できる」。
      * 空なら特殊召喚のしかたを問わない。
      */

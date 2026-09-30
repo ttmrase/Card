@@ -254,6 +254,22 @@ fun CardEditScreen(
                     }
 
                     Text(
+                        "同じ名前のカードが表側表示で存在できる数",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    FlowRowSimple {
+                        Chip("制限なし", selected = card.uniqueOnField == null) {
+                            card = card.copy(uniqueOnField = null)
+                        }
+                        UniqueScope.all.forEach { scope ->
+                            Chip(scope.label, selected = card.uniqueOnField == scope) {
+                                card = card.copy(uniqueOnField = scope)
+                            }
+                        }
+                    }
+
+                    Text(
                         "特殊召喚できる効果を限定する（空なら制限なし）",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -324,6 +340,32 @@ fun CardEditScreen(
                             }
                         }
                     }
+                }
+            }
+
+            // ---- 魔法・罠の「1枚しか存在できない」 -------------------
+            if (card.kind != CardKind.MONSTER) {
+                SectionCard(title = "フィールドでの枚数") {
+                    Text(
+                        "同じ名前のカードが表側表示で存在できる数",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    FlowRowSimple {
+                        Chip("制限なし", selected = card.uniqueOnField == null) {
+                            card = card.copy(uniqueOnField = null)
+                        }
+                        UniqueScope.all.forEach { scope ->
+                            Chip(scope.label, selected = card.uniqueOnField == scope) {
+                                card = card.copy(uniqueOnField = scope)
+                            }
+                        }
+                    }
+                    Text(
+                        "同じ名前のカードが表側表示であると、このカードは発動できません（伏せることはできます）。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             }
 

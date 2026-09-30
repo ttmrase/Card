@@ -736,6 +736,70 @@ class GameEngine(
         }
     }
 
+    /**
+     * コストのどこが足りないかの説明。「【コスト】を支払えない」の後ろに付ける。
+     * カウンターの種類違いのように、盤面を見ても分かりにくい原因を示す。
+     */
+    private fun costShortfall(
+        costs: List<Cost>,
+        controller: PlayerState,
+        inst: CardInstance,
+        summonScope: CardScope?
+    ): String {
+        val lines = mutableListOf<String>()
+        // 出すモンスターのレベルで払う量が決まる場合は、いちばん安い候補で見る。
+        var target: CardInstance? = null
+        if (summonScope != null && needsSummonTarget(costs)) {
+            val all = candidates(summonScope, controller, inst)
+            val summonable = all.filter { canBeSpecialSummoned(it, controller, inst) }
+            when {
+                all.isEmpty() -> return "（特殊召喚できる候補のモンスターがいない）"
+                summonable.isEmpty() ->
+                    return "（候補の" + all.joinToString("、") { "「${it.card.name}」" } +
+                        "は今は特殊召喚できない）"
+            }
+            target = summonable.minByOrNull { levelOf(it) }
+            lines += "候補でいちばん低いのは「${target!!.card.name}」（レベル${levelOf(target)}）"
+        }
+        levelContext = target
+        try {
+            for (cost in costs) {
+                if (canPayCostsPlain(listOf(cost), controller, inst)) continue
+                when (cost) {
+                    is CounterCost -> {
+                        val key = cost.counterId ?: DEFAULT_COUNTER
+                        val cards = candidates(cost.scope, controller, inst, respectProtection = false)
+                        val have = cards.sumOf { it.counterCount(key) }
+                        val need = resolveValue(cost.amountSpec, controller, inst)
+                        val name = state.master.counterName(cost.counterId)
+                        var line = "${name}が${have}個しかない（${need}個必要）"
+                        val others = cards.flatMap { card ->
+                            card.counters.filter { it.key != key && it.value > 0 }.map { it.key to it.value }
+                        }
+                        if (others.isNotEmpty()) {
+                            line += "。乗っているのは別の種類：" + others.joinToString("、") { (id, n) ->
+                                "${state.master.counterName(id.takeIf { it != DEFAULT_COUNTER })}×$n"
+                            }
+                        }
+                        lines += line
+                    }
+
+                    is PayLifeCost ->
+                        lines += "ライフが足りない（${resolveValue(cost.amountSpec, controller, inst)}より多く必要）"
+
+                    is TributeCost ->
+                        lines += "リリースできるモンスターが足りない（" +
+                            "${resolveValue(cost.countSpec, controller, inst)}体必要）"
+
+                    else -> Unit
+                }
+            }
+        } finally {
+            levelContext = null
+        }
+        return if (lines.isEmpty()) "" else "（" + lines.joinToString("。") + "）"
+    }
+
     /** コストの量が釣り合う、特殊召喚できるモンスターの候補。 */
     private fun affordableSummons(
         costs: List<Cost>,
@@ -2021,6 +2085,11 @@ class GameEngine(
         val isOwnTurn = state.turnPlayer === controller
         val inMainPhase = state.phase == Phase.MAIN1 || state.phase == Phase.MAIN2
 
+        if (inst.card.kind != CardKind.MONSTER && !(isOnField(inst) && !inst.faceDown) &&
+            uniqueBlocks(inst, controller)
+        ) {
+            return "「${inst.card.name}」は${inst.card.uniqueOnField?.sentence}。"
+        }
         if (!activationAllowed(inst, controller)) {
             return "【制限】により、このカードの効果は発動できない。"
         }
@@ -2050,7 +2119,8 @@ class GameEngine(
                     "【条件】を満たしていない。"
 
                 !canPayCosts(effect.costsFor(index), controller, inst, summonScopeOf(effect, index)) ->
-                    "【コスト】を支払えない。"
+                    "【コスト】を支払えない。" +
+                        costShortfall(effect.costsFor(index), controller, inst, summonScopeOf(effect, index))
 
                 !canResolveActions(effect.clauses[index], controller, inst) ->
                     "効果を最後まで処理できる対象がそろっていない。"
@@ -3038,6 +3108,11 @@ class GameEngine(
 
     /** [inst] を発動しようとしたとき、それを禁じる制限が掛かっていないか。 */
     private fun activationAllowed(inst: CardInstance, controller: PlayerState): Boolean {
+        // 魔法・罠は発動すると表になるので、同じ名前の表側のカードがあれば発動できない。
+        val faceUpOnField = isOnField(inst) && !inst.faceDown
+        if (inst.card.kind != CardKind.MONSTER && !faceUpOnField && uniqueBlocks(inst, controller)) {
+            return false
+        }
         val kind = when (inst.card.kind) {
             CardKind.SPELL -> RestrictionKind.ACTIVATE_SPELL
             CardKind.TRAP -> RestrictionKind.ACTIVATE_TRAP
@@ -3080,10 +3155,33 @@ class GameEngine(
             SummonKind.ANY -> RestrictionKind.ANY_SUMMON
         },
         inst
-    )
+    ) && (kind == SummonKind.NORMAL || !uniqueBlocks(inst, controller))
 
-    fun canNormalSummon(inst: CardInstance, controller: PlayerState): Boolean {
+    /**
+     * 「フィールドに1枚しか表側表示で存在できない」により、[inst] を
+     * [controller] のフィールドに表側で出せないか。同じ名前の表側のカードがあれば出せない。
+     */
+    fun uniqueBlocks(inst: CardInstance, controller: PlayerState): Boolean {
+        val scope = inst.card.uniqueOnField ?: return false
+        val players = when (scope) {
+            UniqueScope.OWN_FIELD -> listOf(controller)
+            UniqueScope.WHOLE_FIELD -> state.players
+        }
+        return players.any { player ->
+            (player.monsters + player.spellsAndTraps).any {
+                it !== inst && !it.faceDown && it.card.name == inst.card.name
+            }
+        }
+    }
+
+    fun canNormalSummon(
+        inst: CardInstance,
+        controller: PlayerState,
+        /** 裏側守備でのセットか。セットなら「1枚しか存在できない」は掛からない。 */
+        asSet: Boolean = false
+    ): Boolean {
         if (inst.card.kind != CardKind.MONSTER) return false
+        if (!asSet && uniqueBlocks(inst, controller)) return false
         // トークンと「通常召喚できない」カードは通常召喚できない。
         if (inst.card.isToken || inst.card.cannotNormalSummon) return false
         if (state.turnPlayer !== controller) return false
@@ -3109,7 +3207,7 @@ class GameEngine(
         controller: PlayerState,
         asSet: Boolean
     ): Boolean {
-        if (!canNormalSummon(inst, controller)) {
+        if (!canNormalSummon(inst, controller, asSet)) {
             interaction.notify(controller.index, "そのモンスターは今は通常召喚できない。")
             return false
         }
@@ -3189,6 +3287,8 @@ class GameEngine(
     /** 表側攻撃表示 ⇔ 表側守備表示の変更。1ターンに1度、召喚したターンは不可。 */
     fun canChangePosition(inst: CardInstance, controller: PlayerState): Boolean =
         allowed(controller, RestrictionKind.CHANGE_POSITION, inst) &&
+            // 裏側から表にするときは「1枚しか存在できない」に掛かる。
+            !(inst.faceDown && uniqueBlocks(inst, controller)) &&
             state.turnPlayer === controller &&
             (state.phase == Phase.MAIN1 || state.phase == Phase.MAIN2) &&
             locate(inst)?.zone == ZoneType.MONSTER_ZONE &&

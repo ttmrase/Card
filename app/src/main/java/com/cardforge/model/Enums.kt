@@ -239,6 +239,17 @@ enum class PhaseAdvance(val label: String) {
     }
 }
 
+/** 「フィールドに1枚しか表側表示で存在できない」の範囲。 */
+@Serializable
+enum class UniqueScope(val label: String, val sentence: String) {
+    OWN_FIELD("自分フィールドに1枚まで", "自分フィールドに1枚しか表側表示で存在できない"),
+    WHOLE_FIELD("フィールドに1枚まで", "フィールドに1枚しか表側表示で存在できない");
+
+    companion object {
+        val all: List<UniqueScope> get() = entries
+    }
+}
+
 /** 召喚の種類。召喚制限の対象を書き分けるために使う。 */
 @Serializable
 enum class SummonKind(val label: String) {

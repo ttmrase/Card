@@ -658,6 +658,7 @@ object EffectTextRenderer {
                 "の効果でのみ特殊召喚できる。"
         }
         if (card.cannotSpecialSummon) lines += "このカードは特殊召喚できない。"
+        card.uniqueOnField?.let { lines += "「${card.name}」は${it.sentence}。" }
         card.selfRestrictions.forEach { lines += selfRestrictionSentence(it) + "。" }
         card.selfPermissions.forEach { lines += selfPermissionSentence(it) + "。" }
 
