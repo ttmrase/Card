@@ -701,7 +701,58 @@ class GameEngine(
         LevelSource.EVENT_SOURCE -> listOfNotNull(currentTrigger?.sourceCard)
         LevelSource.LAST_HANDLED -> lastHandled
         LevelSource.SELF -> listOfNotNull(source)
+        LevelSource.SUMMON_TARGET -> listOfNotNull(levelContext ?: summonReserve)
     }
+
+    // -----------------------------------------------------------------------
+    // 「この効果で特殊召喚するモンスター」を先に選ぶコスト
+    // -----------------------------------------------------------------------
+
+    /** コストを見積もっているあいだ、仮に「特殊召喚するモンスター」とするカード。 */
+    private var levelContext: CardInstance? = null
+
+    /** コストを払うときに選んだ、この効果で特殊召喚するモンスター。 */
+    private var summonReserve: CardInstance? = null
+
+    /** 効果番号 [index] の最初の特殊召喚の対象指定。 */
+    private fun summonScopeOf(effect: EffectText, index: Int): CardScope? =
+        effect.clauses.getOrNull(index)?.actions
+            ?.firstNotNullOfOrNull { (it as? SpecialSummonAction)?.scope }
+
+    /** カードの発動（発動時の効果）で特殊召喚する対象指定。 */
+    private fun cardSummonScopeOf(effect: EffectText): CardScope? =
+        effect.onActivationClauses().firstNotNullOfOrNull { summonScopeOf(effect, it) }
+
+    private fun usesSummonTarget(spec: ValueSpec?): Boolean =
+        spec is LevelValue && spec.source == LevelSource.SUMMON_TARGET
+
+    private fun needsSummonTarget(costs: List<Cost>): Boolean = costs.any { cost ->
+        when (cost) {
+            is PayLifeCost -> usesSummonTarget(cost.amountValue)
+            is TributeCost -> usesSummonTarget(cost.countValue)
+            is CounterCost -> usesSummonTarget(cost.amountValue)
+            is MoveCost -> usesSummonTarget(cost.scope.countSpec)
+            else -> false
+        }
+    }
+
+    /** コストの量が釣り合う、特殊召喚できるモンスターの候補。 */
+    private fun affordableSummons(
+        costs: List<Cost>,
+        controller: PlayerState,
+        excluding: CardInstance?,
+        summonScope: CardScope
+    ): List<CardInstance> =
+        candidates(summonScope, controller, excluding)
+            .filter { canBeSpecialSummoned(it, controller, excluding) }
+            .filter { target ->
+                levelContext = target
+                try {
+                    canPayCostsPlain(costs, controller, excluding)
+                } finally {
+                    levelContext = null
+                }
+            }
 
     /** レベルを持つのはモンスターだけ。魔法・罠は 0 として数える。 */
     private fun levelOf(inst: CardInstance): Int =
@@ -834,7 +885,20 @@ class GameEngine(
     fun canPayCosts(
         costs: List<Cost>,
         controller: PlayerState,
-        excluding: CardInstance? = null
+        excluding: CardInstance? = null,
+        /** この効果で特殊召喚する対象指定。レベルで量が決まるコストに使う。 */
+        summonScope: CardScope? = null
+    ): Boolean =
+        if (summonScope != null && needsSummonTarget(costs)) {
+            affordableSummons(costs, controller, excluding, summonScope).isNotEmpty()
+        } else {
+            canPayCostsPlain(costs, controller, excluding)
+        }
+
+    private fun canPayCostsPlain(
+        costs: List<Cost>,
+        controller: PlayerState,
+        excluding: CardInstance?
     ): Boolean = costs.all { cost ->
         when (cost) {
             is PayLifeCost -> controller.life > resolveValue(cost.amountSpec, controller, excluding)
@@ -896,9 +960,21 @@ class GameEngine(
     private suspend fun payCosts(
         costs: List<Cost>,
         controller: PlayerState,
-        excluding: CardInstance?
+        excluding: CardInstance?,
+        summonScope: CardScope? = null
     ): Boolean = withCause(EventCause.EFFECT, controller.index, excluding) {
-        payCostsInner(costs, controller, excluding)
+        if (summonScope != null && needsSummonTarget(costs)) {
+            // 払う量が出すモンスターで決まるので、先にそのモンスターを選ぶ。
+            val pool = affordableSummons(costs, controller, excluding, summonScope)
+            val chosen = interaction.chooseCards(
+                controller.index, "特殊召喚するモンスターを選択", pool, 1, 1, excluding
+            ).firstOrNull() ?: return@withCause false
+            summonReserve = chosen
+            log("${controller.name}は特殊召喚するモンスターとして「${chosen.card.name}」を選んだ。")
+        }
+        val paid = payCostsInner(costs, controller, excluding)
+        if (!paid) summonReserve = null
+        paid
     }
 
     private suspend fun payCostsInner(
@@ -1209,10 +1285,17 @@ class GameEngine(
 
             is SpecialSummonAction -> {
                 val destination = primaryPlayer(action.controller, controller)
-                // 出せないモンスターは、そもそも候補に出さない。
-                val targets = resolveTargets(
-                    action.scope, controller, "特殊召喚するモンスターを選択", source
-                ) { canBeSpecialSummoned(it, destination, source) }
+                // コストを払うときに選んでおいたモンスターがいれば、それを出す。
+                val reserved = summonReserve
+                summonReserve = null
+                val targets = if (reserved != null && locate(reserved) != null) {
+                    listOf(reserved)
+                } else {
+                    // 出せないモンスターは、そもそも候補に出さない。
+                    resolveTargets(
+                        action.scope, controller, "特殊召喚するモンスターを選択", source
+                    ) { canBeSpecialSummoned(it, destination, source) }
+                }
                 val summoned = mutableListOf<CardInstance>()
                 for (target in targets) {
                     if (!summonAllowed(target, destination, SummonKind.SPECIAL)) {
@@ -1545,7 +1628,7 @@ class GameEngine(
             }
 
             conditionsMet(effect.conditionsFor(index), controller, inst) &&
-                canPayCosts(effect.costsFor(index), controller, excluding = inst) &&
+                canPayCosts(effect.costsFor(index), controller, inst, summonScopeOf(effect, index)) &&
                 canResolveActions(clause, controller, inst)
         }
     }
@@ -1602,7 +1685,12 @@ class GameEngine(
         controller: PlayerState,
         source: CardInstance?
     ) = withCause(EventCause.EFFECT, controller.index, source) {
-        runClauseInner(clause, controller, source)
+        try {
+            runClauseInner(clause, controller, source)
+        } finally {
+            // 先に選んでおいた特殊召喚のモンスターは、この効果の中だけで使う。
+            summonReserve = null
+        }
     }
 
     private suspend fun runClauseInner(
@@ -1961,7 +2049,7 @@ class GameEngine(
                 !conditionsMet(effect.conditionsFor(index), controller, inst) ->
                     "【条件】を満たしていない。"
 
-                !canPayCosts(effect.costsFor(index), controller, excluding = inst) ->
+                !canPayCosts(effect.costsFor(index), controller, inst, summonScopeOf(effect, index)) ->
                     "【コスト】を支払えない。"
 
                 !canResolveActions(effect.clauses[index], controller, inst) ->
@@ -2076,7 +2164,7 @@ class GameEngine(
 
         if (!limitsAllow(inst, CARD_ACTIVATION, controller)) return false
         if (!conditionsMet(effect.conditions, controller, inst)) return false
-        if (!canPayCosts(effect.costs, controller, excluding = inst)) return false
+        if (!canPayCosts(effect.costs, controller, inst, cardSummonScopeOf(effect))) return false
         // 発動時処理があるなら、それを最後まで通せることを確かめる。
         return effect.onActivationClauses().all { index ->
             canResolveActions(effect.clauses[index], controller, inst)
@@ -2125,7 +2213,7 @@ class GameEngine(
 
         log("${controller.name}は「${inst.card.name}」を発動。")
 
-        if (!payCosts(effect.costs, controller, excluding = inst)) {
+        if (!payCosts(effect.costs, controller, inst, cardSummonScopeOf(effect))) {
             log("「${inst.card.name}」はコストを支払えなかったため発動を取り消した。")
             if (placeOnField) {
                 controller.spellTrapZones.indexOfFirst { it === inst }
@@ -2136,6 +2224,8 @@ class GameEngine(
             return false
         }
 
+        val reserved = summonReserve
+        summonReserve = null
         recordActivation(inst, CARD_ACTIVATION, controller)
         applyPlayLocks(effect.playLocks, controller)
 
@@ -2149,9 +2239,11 @@ class GameEngine(
             return true
         }
 
-        // 発動時の効果処理。
+        // 発動時の効果処理。カードの【コスト】で選んだモンスターは最初の効果で出す。
         val zoneBefore = locate(inst)?.zone
+        summonReserve = reserved
         runOnActivationClauses(effect, controller, inst)
+        summonReserve = null
 
         // 効果自身がカードを動かしていたら、そのままにしておく。
         if (locate(inst)?.zone == zoneBefore) {
@@ -2170,8 +2262,8 @@ class GameEngine(
             if (state.finished) break
             val clause = effect.clauses[index]
             if (!conditionsMet(effect.conditionsFor(index), controller, inst)) continue
-            if (!canPayCosts(effect.costsFor(index), controller, excluding = inst)) continue
-            if (!payCosts(clause.costs, controller, excluding = inst)) continue
+            if (!canPayCosts(effect.costsFor(index), controller, inst, summonScopeOf(effect, index))) continue
+            if (!payCosts(clause.costs, controller, inst, summonScopeOf(effect, index))) continue
             runClause(clause, controller, inst)
         }
     }
@@ -2302,7 +2394,7 @@ class GameEngine(
         log("${controller.name}は「${inst.card.name}」の${EffectNumbers.circled(clauseIndex)}を発動。")
 
         // コストは発動宣言時に支払う。払えなければ発動そのものを取り消す。
-        if (!payCosts(effect.costsFor(clauseIndex), controller, excluding = inst)) {
+        if (!payCosts(effect.costsFor(clauseIndex), controller, inst, summonScopeOf(effect, clauseIndex))) {
             log("「${inst.card.name}」はコストを支払えなかったため発動を取り消した。")
             if (placeOnField) {
                 // 手札から出したところだったので手札に戻す。
@@ -2313,6 +2405,10 @@ class GameEngine(
             }
             return false
         }
+
+        // 割り込みの効果がコストを払っても上書きされないよう、選んだモンスターを取っておく。
+        val reserved = summonReserve
+        summonReserve = null
 
         recordActivation(inst, clauseIndex, controller)
         // 【制限】の召喚制限は、発動した時点で掛かる（無効にされても残る）。
@@ -2332,6 +2428,7 @@ class GameEngine(
         val zoneBefore = locate(inst)?.zone
         // 「このカードの発動時に」処理する効果は、番号の効果より先に処理する。
         if (isCardActivation) runOnActivationClauses(effect, controller, inst)
+        summonReserve = reserved
         runClause(clause, controller, inst)
 
         // 【発動後】の処理。省略時は魔法・罠なら墓地へ、モンスターならそのまま。
@@ -2819,7 +2916,7 @@ class GameEngine(
 
         if (!limitsAllow(inst, index, controller)) return false
         if (!conditionsMet(effect.conditionsFor(index), controller, inst, event)) return false
-        if (!canPayCosts(effect.costsFor(index), controller, excluding = inst)) return false
+        if (!canPayCosts(effect.costsFor(index), controller, inst, summonScopeOf(effect, index))) return false
         return canResolveActions(clause, controller, inst)
     }
 

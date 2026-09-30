@@ -186,7 +186,14 @@ enum class LevelSource(val label: String) {
     EVENT_SOURCE("その出来事の相手側のモンスター"),
     /** 直前の処理（破壊した・特殊召喚した等）で扱ったモンスター。複数なら合計。 */
     LAST_HANDLED("直前の処理で扱ったモンスター"),
-    SELF("このカード");
+    SELF("このカード"),
+
+    /**
+     * この効果で特殊召喚するモンスター。【コスト】に使うと、コストを払う時点で
+     * 特殊召喚するモンスターを先に選ぶ。「レベルの数だけカウンターを取り除いて特殊召喚する」
+     * のように、出すモンスターによって払う量が変わるコストが書ける。
+     */
+    SUMMON_TARGET("この効果で特殊召喚するモンスター");
 
     companion object {
         val all: List<LevelSource> get() = entries

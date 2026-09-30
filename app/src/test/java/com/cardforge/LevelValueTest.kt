@@ -184,4 +184,61 @@ class LevelValueTest {
             EffectTextRenderer.costToText(TributeCost(1, countValue = LevelValue(LevelSource.SELF)), master)
         )
     }
+
+    @Test
+    fun `counters equal to the summoned monster's level are removed as the cost`() = runBlocking {
+        val (state, engine) = game()
+        val me = state.players[0]
+        // 「このカードからカウンターを、特殊召喚するモンスターのレベルの数だけ取り除いて、
+        //   手札からモンスター1体を特殊召喚する」。
+        val vessel = monster(
+            "器", 1,
+            EffectText(
+                clauses = listOf(
+                    EffectClause(
+                        costs = listOf(
+                            CounterCost(amountValue = LevelValue(LevelSource.SUMMON_TARGET))
+                        ),
+                        actions = listOf(
+                            SpecialSummonAction(
+                                CardScope(
+                                    who = PlayerRef.SELF,
+                                    zone = ZoneType.HAND,
+                                    filters = listOf(KindFilter(CardKind.MONSTER)),
+                                    count = 1
+                                )
+                            )
+                        )
+                    )
+                )
+            )
+        )
+        me.monsterZones[0] = vessel
+        val seven = monster("七つ星", 7)
+        val four = monster("四つ星", 4)
+        me.hand.add(seven)
+        me.hand.add(four)
+
+        vessel.counters["counter"] = 3
+        assertTrue("どちらのレベルにも足りない", engine.activatableClauses(vessel, me).isEmpty())
+
+        vessel.counters["counter"] = 5
+        assertEquals(listOf(0), engine.activatableClauses(vessel, me))
+        engine.activateCard(vessel, me)
+
+        // 5個では七つ星は出せないので、候補は四つ星だけ。取り除くのは4個。
+        assertTrue(me.monsters.any { it === four })
+        assertTrue(me.hand.any { it === seven })
+        assertEquals(1, vessel.counterCount(null))
+    }
+
+    @Test
+    fun `the summon target reads plainly`() {
+        assertEquals(
+            "このカードのカウンターをこの効果で特殊召喚するモンスターのレベルだけ取り除く",
+            EffectTextRenderer.costToText(
+                CounterCost(amountValue = LevelValue(LevelSource.SUMMON_TARGET)), master
+            )
+        )
+    }
 }

@@ -94,6 +94,10 @@ fun ValueSpecEditor(
                             "直前の処理（破壊した・特殊召喚した等）で扱ったモンスターのレベルです。" +
                                 "複数なら合計します。別のカードの効果で扱ったものも指せます。"
                         LevelSource.SELF -> "この効果を持つカード自身のレベルです。"
+                        LevelSource.SUMMON_TARGET ->
+                            "この効果で特殊召喚するモンスターのレベルです。【コスト】に使うと、" +
+                                "コストを払うときに出すモンスターを先に選びます。" +
+                                "足りるモンスターがいなければ発動できません。"
                     },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
